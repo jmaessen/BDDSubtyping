@@ -62,7 +62,7 @@ library
     import:           warnings
 
     -- Modules exported by the library.
-    exposed-modules:  BDDSubtyping.DAG
+    exposed-modules:  BDDSubtyping.DAG BDDSubtyping.BDD
 
     -- Modules included in this library but not exported.
     -- other-modules:
@@ -103,6 +103,8 @@ test-suite BDDSubtyping-test
 
     -- Allow orphan instances in test code (Arbitrary)
     ghc-options:      -Wno-orphans -Wno-incomplete-uni-patterns
+
+    other-modules:    DAG, BDD
 
     -- Test dependencies.
     build-depends:
