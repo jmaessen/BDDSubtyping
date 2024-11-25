@@ -1,4 +1,4 @@
-module BDDSubtyping.DAG(DAG, tr, mkDag, Relatedness(..)) where
+module BDDSubtyping.DAG(DAG, tr, mkDag, invalidEdges, Relatedness(..)) where
 import Data.IntMap.Strict(IntMap, (!?))
 import qualified Data.IntMap.Strict as M
 import qualified Data.IntSet as S
@@ -12,14 +12,19 @@ instance Show DAG where
   show (DAG d) = "mkDag " ++ show [(i, S.toList es) | (i, es) <- M.toList d]
 
 mkDag :: [(Int, [Int])] -> DAG
-mkDag ns = tc (M.fromList [(i, S.fromList es) | (i, es) <- ns])
+mkDag ns = tc (M.fromList [(i, S.fromList es) | (i, es) <- ns, not (null es)])
 
--- Transitive closure (input is reflexively closed)
+-- Given a DAG, return a list of invalid edges.  This should be empty.
+invalidEdges :: DAG -> [(Int, Int)]
+invalidEdges (DAG d) =
+  [(a,b) | (a,bs) <- M.toList d, b <- S.toList bs, a < b]
+
+-- Transitive closure.  Assumes topologically sorted node numbering.
 tc :: IntMap IntSet -> DAG
 tc is = DAG (foldl' tcn M.empty (M.toAscList is)) where
   tcn :: IntMap IntSet -> (Int, IntSet) -> IntMap IntSet
   tcn acc (i, i_edges) =
-    M.insert i (S.insert i (S.unions (i_edges : [ tcs | c <- S.toList i_edges, Just tcs <- [acc!?c]]))) acc
+    M.insert i (S.unions (i_edges : [ tcs | c <- S.toList i_edges, Just tcs <- [acc!?c]])) acc
 
 data Relatedness = Subtype | Disjoint | MayIntersect
   deriving (Eq, Show)

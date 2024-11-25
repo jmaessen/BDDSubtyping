@@ -16,6 +16,9 @@ instance Arbitrary DAG where
       edges <- replicateM n_edges (choose (0, n-1))
       return ((n,edges):d)
 
+prop_dag_valid :: DAG -> Property
+prop_dag_valid d = invalidEdges d === []
+
 prop_dag_refl :: DAG -> Int -> Bool
 prop_dag_refl d n = tr d n n == Subtype
 
