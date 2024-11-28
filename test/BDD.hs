@@ -123,6 +123,11 @@ prop_common_complete r s =
   common r c (eraseDisjoints r c s) (eraseSubtypes r c s) /= Nothing
   where c = root s + 1
 
+prop_common_eq :: TR -> BDD -> Property
+prop_common_eq r s =
+  let c = root s + 1
+  in common r c s s === Just s
+
 prop_common_correct2 :: TR -> BDD -> Property
 prop_common_correct2 r s =
   let c = root s + 1
