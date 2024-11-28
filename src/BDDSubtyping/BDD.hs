@@ -5,7 +5,7 @@ module BDDSubtyping.BDD(
   bddBases, model, modelDiff,
   basicUnion, basicIntersect, basicDifference, complement,
   eraseSubtypes, eraseDisjoints, fullyErase,
-  common
+  common, commonOrErase
 ) where
 import BDDSubtyping.DAG(DAG, Relatedness(..), tr)
 import Control.Monad(liftM2)
@@ -169,27 +169,57 @@ select' :: Base -> Maybe BDD -> Maybe BDD -> Maybe BDD
 select' i = liftM2 (select i)
 
 common :: TR -> Base -> BDD -> BDD -> Maybe BDD
-common r c t@(bdd -> Select it tt et) e@(bdd -> Select ie te ee) =
-  case compare it ie of
-    GT -> commonThenHigh r c it tt et e
-    EQ -> select' it (common r c tt te) (common r c et ee)
-    LT -> commonElseHigh r c t ie te ee
-common r c (bdd -> Select it tt et) e = commonThenHigh r c it tt et e
-common r c t (bdd -> Select ie te ee) = commonElseHigh r c t ie te ee
-common _   _ Top Bot = Nothing
-common _   _ Bot Top = Nothing
-common _   _ Top Top = Just Top
-common _   _ _   _   = Just Bot -- Bot Bot
+common r c t0 e0 = loop t0 e0 where
+  loop t@(bdd -> Select it tt et) e@(bdd -> Select ie te ee) =
+    case compare it ie of
+      GT -> thenHigh it tt et e
+      EQ -> select' it (loop tt te) (loop et ee)
+      LT -> elseHigh t ie te ee
+  loop (bdd -> Select it tt et) e = thenHigh it tt et e
+  loop t (bdd -> Select ie te ee) = elseHigh t ie te ee
+  loop Top Bot = Nothing
+  loop Bot Top = Nothing
+  loop Top Top = Just Top
+  loop _   _   = Just Bot -- Bot Bot
+  thenHigh it tt et e
+    | tr r it c == Subtype = select' it (Just tt) (loop et e)
+    | otherwise = select' it (loop tt e) (loop et e)
+  elseHigh t ie te ee
+    | tr r ie c == Disjoint = select' ie (Just te) (loop t ee)
+    | otherwise = select' ie (loop t te) (loop t ee)
 
-commonThenHigh :: TR -> Base -> Base -> BDD -> BDD -> BDD -> Maybe BDD
-commonThenHigh r c it tt et e
-  | tr r it c == Subtype = select' it (Just tt) (common r c et e)
-  | otherwise = select' it (common r c tt e) (common r c et e)
-
-commonElseHigh :: TR -> Base -> BDD -> Base -> BDD -> BDD -> Maybe BDD
-commonElseHigh r c t ie te ee
-  | tr r ie c == Disjoint = select' ie (Just te) (common r c t ee)
-  | otherwise = select' ie (common r c t te) (common r c t ee)
+-- Fused common and erase: should equal:
+-- (eraseDisjoints r c t, eraseSubtypes r c e,
+--  common r c (eraseDisjoints r c t) (eraseSubtypes r c e))
+commonOrErase :: TR -> Base -> BDD -> BDD -> (BDD, BDD, Maybe BDD)
+commonOrErase r c t0 e0 = loop t0 e0 where
+  loop t@(bdd -> Select it tt et) e@(bdd -> Select ie te ee) =
+    case (compare it ie, tr r it c) of
+      (GT, cmp) -> thenHigh cmp it tt et e
+      (EQ, cmp) -> same cmp it tt et te ee
+      (LT, _) -> elseHigh (tr r ie c) t ie te ee
+  loop (bdd -> Select it tt et) e = thenHigh (tr r it c) it tt et e
+  loop t (bdd -> Select ie te ee) = elseHigh (tr r ie c) t ie te ee
+  loop Top Bot = (Top, Bot, Nothing)
+  loop Bot Top = (Bot, Top, Nothing)
+  loop Top Top = (Top, Top, Just Top)
+  loop _   _   = (Bot, Bot, Just Bot)
+  both i tt et te ee = (select i tt' et', select i te' ee', select' i t' e')
+    where (tt', te', t') = loop tt te
+          (et', ee', e') = loop et ee
+  same Subtype i tt et _ ee = both i tt et ee ee
+  same Disjoint i _ et te ee = both i et et te ee
+  same MayIntersect i tt et te ee = both i tt et te ee
+  thenHigh Disjoint _ _ et e = loop et e
+  thenHigh Subtype it tt et e = (select it tt' et', ee', select' it (Just tt') e')
+    where tt' = eraseDisjoints r c tt
+          (et', ee', e') = loop et e
+  thenHigh MayIntersect it tt et e = both it tt et e e
+  elseHigh Subtype t _ _ ee = loop t ee
+  elseHigh Disjoint t ie te ee = (et', select ie te' ee', select' ie (Just te') e')
+    where te' = eraseSubtypes r c te
+          (et', ee', e') = loop t ee
+  elseHigh MayIntersect t ie te ee = both ie t t te ee
 
 size :: BDD -> Int
 size b = sizeb b where
