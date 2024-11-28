@@ -19,10 +19,23 @@ type Base = Int
 
 data Sense = Not | Pos deriving (Eq, Ord, Show)
 
-data BDD = BDD Sense RNBDD deriving (Eq, Ord, Show)
+data BDD = BDD Sense RNBDD deriving (Eq, Ord)
 
-data RNBDD = None | Sel Base BDD RNBDD
-  deriving (Eq, Ord, Show)
+data RNBDD = None | Sel Base {-# UNPACK #-}!BDD RNBDD
+  deriving (Eq, Ord)
+
+instance Show BDD where
+  showsPrec _ Bot = ("Bot"++)
+  showsPrec _ Top = ("Top"++)
+  showsPrec p (BDD Pos b) = showsPrec p b
+  showsPrec _ (BDD Not b) = showParen True (("complement "++) . shows b)
+
+instance Show RNBDD where
+  showsPrec _ None = ("Bot"++)
+  showsPrec _ (Sel i Top None) = showParen True (("base "++) . shows i)
+  showsPrec _ (Sel i t e) =
+    showParen True
+      (("select "++) . shows i . (' ':) . shows t . (' ':) . shows e)
 
 -- Take the complement of a BDD. O(1).
 complement :: BDD -> BDD
