@@ -143,15 +143,15 @@ basicDifference a b = complement $ basicUnion (complement a) b
 
 -- Erase all strict subtypes of base i in bdd b to their else branch.
 eraseSubtypes :: TR -> Base -> BDD -> BDD
-eraseSubtypes trd i (bdd -> Select j t e)
-  | j <= i && tr trd j i == Subtype = e
-  | otherwise = select j (eraseSubtypes trd i t) (eraseSubtypes trd i e)
+eraseSubtypes r i (bdd -> Select j t e)
+  | j <= i && tr r j i == Subtype = eraseSubtypes r i e
+  | otherwise = select j (eraseSubtypes r i t) (eraseSubtypes r i e)
 eraseSubtypes _ _ leaf = leaf
 
 -- Erase all types disjoint from base i in bdd b to their else branch.
 eraseDisjoints :: TR -> Base -> BDD -> BDD
 eraseDisjoints r i (bdd -> Select j t e)
-  | tr r j i == Disjoint = e
+  | tr r j i == Disjoint = eraseDisjoints r i e
   | otherwise = select j (eraseDisjoints r i t) (eraseDisjoints r i e)
 eraseDisjoints _ _ leaf = leaf
 
