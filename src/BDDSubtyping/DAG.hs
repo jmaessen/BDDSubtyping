@@ -1,28 +1,32 @@
-module BDDSubtyping.DAG(DAG, tr, mkDag, invalidEdges, Relatedness(..)) where
+module BDDSubtyping.DAG(DAG, Node, tr, mkDag, invalidEdges, supers, Relatedness(..)) where
 import Data.IntMap.Strict(IntMap, (!?))
 import qualified Data.IntMap.Strict as M
 import qualified Data.IntSet as S
 import Data.IntSet(IntSet)
 import Data.List(foldl')
 
+type Node = Int
+
 newtype DAG = DAG (IntMap IntSet)
   deriving (Eq)
 
 instance Show DAG where
-  show (DAG d) = "mkDag " ++ show [(i, S.toList es) | (i, es) <- M.toList d]
+  showsPrec _ (DAG d) = ("mkDag " ++) . showgr d
+    where showgr g = shows [(i, S.toList es) | (i, es) <- M.toList g]
 
-mkDag :: [(Int, [Int])] -> DAG
-mkDag ns = tc (M.fromList [(i, S.fromList es) | (i, es) <- ns, not (null es)])
+mkDag :: [(Node, [Node])] -> DAG
+mkDag ns =
+  DAG $ tc (M.fromList [(i, S.fromList es) | (i, es) <- ns, not (null es)])
 
 -- Given a DAG, return a list of invalid edges.  This should be empty.
-invalidEdges :: DAG -> [(Int, Int)]
+invalidEdges :: DAG -> [(Node, Node)]
 invalidEdges (DAG d) =
   [(a,b) | (a,bs) <- M.toList d, b <- S.toList bs, a < b]
 
 -- Transitive closure.  Assumes topologically sorted node numbering.
-tc :: IntMap IntSet -> DAG
-tc is = DAG (foldl' tcn M.empty (M.toAscList is)) where
-  tcn :: IntMap IntSet -> (Int, IntSet) -> IntMap IntSet
+tc :: IntMap IntSet -> IntMap IntSet
+tc is = foldl' tcn M.empty (M.toAscList is) where
+  tcn :: IntMap IntSet -> (Node, IntSet) -> IntMap IntSet
   tcn acc (i, i_edges) =
     M.insert i (S.unions (i_edges : [ tcs | c <- S.toList i_edges, Just tcs <- [acc!?c]])) acc
 
@@ -30,14 +34,15 @@ data Relatedness = Subtype | Disjoint | MayIntersect
   deriving (Eq, Show)
 
 -- Relate
-tr :: DAG -> Int -> Int -> Relatedness
+tr :: DAG -> Node -> Node -> Relatedness
 tr d a b | a > b = tr d b a
 tr _ a b | a == b = Subtype
 tr (DAG d) a b =
   case (d!?a, d!?b) of
-    (_, Nothing) -> Disjoint
-    (_, Just bs) | S.member a bs -> Subtype
-    (Just as, Just bs)
-        | S.disjoint as bs -> Disjoint
-        | otherwise -> MayIntersect
+    (_, Just bSubs) | S.member a bSubs -> Subtype
+    (Just aSubs, Just bSubs) | not (S.disjoint aSubs bSubs) -> MayIntersect
     _ -> Disjoint
+
+-- Supertypes
+supers :: DAG -> Node -> [Node]
+supers (DAG d _) a = S.toList $ M.findWithDefault mempty a d
