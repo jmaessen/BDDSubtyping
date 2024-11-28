@@ -1,7 +1,6 @@
 {-# LANGUAGE TemplateHaskell #-}
 module DAG where
 import Control.Monad(replicateM)
-import Data.List(sort)
 import Test.QuickCheck
 
 import BDDSubtyping.DAG
@@ -16,30 +15,31 @@ instance Arbitrary DAG where
       edges <- replicateM n_edges (choose (0, n-1))
       return ((n,edges):d)
 
+type TNode = NonNegative Node
+
 prop_dag_valid :: DAG -> Property
 prop_dag_valid d = invalidEdges d === []
 
-prop_dag_refl :: DAG -> Int -> Bool
-prop_dag_refl d n = tr d n n == Subtype
+prop_dag_refl :: DAG -> TNode -> Bool
+prop_dag_refl d (NonNegative n) = tr d n n == Subtype
 
-prop_dag_symm :: DAG -> Int -> Int -> Bool
-prop_dag_symm d a b = tr d a b == tr d b a
+prop_dag_symm :: DAG -> TNode -> TNode -> Bool
+prop_dag_symm d (NonNegative a) (NonNegative b) = tr d a b == tr d b a
 
-prop_dag_trans :: DAG -> NonNegative Int -> NonNegative Int -> NonNegative Int -> Bool
+prop_dag_trans :: DAG -> TNode -> TNode -> TNode -> Property
 prop_dag_trans dag (NonNegative a) (NonNegative b) (NonNegative c) =
-  let [aa, bb, cc] = sort [a, b, c] in
+  let [aa, bb, cc] = [a, a + b + 1, a + b + c + 2] in
   case (tr dag aa bb, tr dag bb cc, tr dag aa cc) of
-    (Subtype, Subtype, d) -> d == Subtype
-    (MayIntersect, MayIntersect, _) -> True
-    (Subtype, MayIntersect, _) -> True
-    (MayIntersect, Subtype, d) -> d /= Disjoint
-    (Disjoint, Subtype, _) -> True
-    (Subtype, Disjoint, d) -> d == Disjoint
-    (Disjoint, MayIntersect, _) -> True
-    (MayIntersect, Disjoint, d) -> d == Disjoint || d == MayIntersect
-    (Disjoint, Disjoint, _) -> True
+    (Subtype, Subtype, Subtype) -> property True
+    (Subtype, MayIntersect, _) -> property True
+    (Subtype, Disjoint, Disjoint) -> property True
+    (MayIntersect, MayIntersect, _) -> property True
+    (MayIntersect, Subtype, d) -> d =/= Disjoint
+    (MayIntersect, Disjoint, d) -> d === Disjoint .||. d === MayIntersect
+    (Disjoint, _, _) -> property True
+    d -> counterexample (show d) False
 
 return []
 
 dagTestAll :: IO Bool
-dagTestAll = $quickCheckAll
+dagTestAll = $forAllProperties (quickCheckWithResult (stdArgs{maxSuccess=1000, maxDiscardRatio=1000}))

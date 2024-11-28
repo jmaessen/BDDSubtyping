@@ -1,4 +1,4 @@
-module BDDSubtyping.DAG(DAG, Node, tr, mkDag, invalidEdges, supers, Relatedness(..)) where
+module BDDSubtyping.DAG(DAG, Node, tr, mkDag, invalidEdges, subs, Relatedness(..)) where
 import Data.IntMap.Strict(IntMap, (!?))
 import qualified Data.IntMap.Strict as M
 import qualified Data.IntSet as S
@@ -43,6 +43,6 @@ tr (DAG d) a b =
     (Just aSubs, Just bSubs) | not (S.disjoint aSubs bSubs) -> MayIntersect
     _ -> Disjoint
 
--- Supertypes
-supers :: DAG -> Node -> [Node]
-supers (DAG d _) a = S.toList $ M.findWithDefault mempty a d
+-- Subtypes
+subs :: DAG -> Node -> [Node]
+subs (DAG d) a = S.toList $ M.findWithDefault mempty a d
