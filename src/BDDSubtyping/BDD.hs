@@ -207,16 +207,20 @@ commonOrErase r c t0 e0 = loop t0 e0 where
   both i tt et te ee = (select i tt' et', select i te' ee', select' i t' e')
     where (tt', te', t') = loop tt te
           (et', ee', e') = loop et ee
-  same Subtype i tt et _ ee = both i tt et ee ee
-  same Disjoint i _ et te ee = both i et et te ee
+  same Subtype i tt et _ ee = thenHigh Subtype i tt et ee
+  same Disjoint i _ et te ee = elseHigh Disjoint et i te ee
   same MayIntersect i tt et te ee = both i tt et te ee
   thenHigh Disjoint _ _ et e = loop et e
-  thenHigh Subtype it tt et e = (select it tt' et', ee', select' it (Just tt') e')
+  thenHigh Subtype it tt et e
+    | tt' == et' = (et', ee', e')
+    | otherwise = (select it tt' et', ee', select' it (Just tt') e')
     where tt' = eraseDisjoints r c tt
           (et', ee', e') = loop et e
   thenHigh MayIntersect it tt et e = both it tt et e e
   elseHigh Subtype t _ _ ee = loop t ee
-  elseHigh Disjoint t ie te ee = (et', select ie te' ee', select' ie (Just te') e')
+  elseHigh Disjoint t ie te ee
+    | te' == ee' = (et', ee', e')
+    | otherwise = (et', select ie te' ee', select' ie (Just te') e')
     where te' = eraseSubtypes r c te
           (et', ee', e') = loop t ee
   elseHigh MayIntersect t ie te ee = both ie t t te ee

@@ -87,15 +87,40 @@ prop_eraseSubtypes_root r b@(bdd -> Select i t e) =
   modelDiff r b (select i t (eraseSubtypes r i e)) === []
 prop_eraseSubtypes_root _ _ = property Discard
 
-mkPos :: BDD -> BDD
-mkPos b
-  | rightmost b = complement b
-  | otherwise = b
+prop_eraseSubtypes_complement :: TR -> BDD -> Property
+prop_eraseSubtypes_complement r b =
+  complement (eraseSubtypes r c b) === eraseSubtypes r c (complement b)
+  where c = 1 + root b
+
+prop_eraseSubtypes_idem :: TR -> BDD -> Property
+prop_eraseSubtypes_idem r b =
+  eraseSubtypes r c (eraseSubtypes r c b) === eraseSubtypes r c b
+  where c = 1 + root b
+
+prop_eraseSubtypes_union :: TR -> BDD -> BDD -> Property
+prop_eraseSubtypes_union r a b =
+  eraseSubtypes r c (a `basicUnion` b) === (eraseSubtypes r c a `basicUnion` eraseSubtypes r c b)
+  where c = 1 + (root a `max` root b)
 
 prop_eraseDisjoints_root :: TR -> BDD -> Property
 prop_eraseDisjoints_root r b@(bdd -> Select i t e) =
   modelDiff r b (select i (eraseDisjoints r i t) e) === []
 prop_eraseDisjoints_root _ _ = property Discard
+
+prop_eraseDisjoints_complement :: TR -> BDD -> Property
+prop_eraseDisjoints_complement r b =
+  complement (eraseDisjoints r c b) === eraseDisjoints r c (complement b)
+  where c = 1 + root b
+
+prop_eraseDisjoints_idem :: TR -> BDD -> Property
+prop_eraseDisjoints_idem r b =
+  eraseDisjoints r c (eraseDisjoints r c b) === eraseDisjoints r c b
+  where c = 1 + root b
+
+prop_eraseDisjoints_union :: TR -> BDD -> BDD -> Property
+prop_eraseDisjoints_union r a b =
+  eraseDisjoints r c (a `basicUnion` b) === (eraseDisjoints r c a `basicUnion` eraseDisjoints r c b)
+  where c = 1 + (root a `max` root b)
 
 prop_erase_root :: TR -> BDD -> Property
 prop_erase_root r b@(bdd -> Select i t e) =
@@ -118,9 +143,11 @@ prop_common r b@(bdd -> Select i t e) =
     Nothing -> property Discard
 prop_common _ _ = property Discard
 
-prop_common_complete :: TR -> BDD -> Bool
+prop_common_complete :: TR -> BDD -> Property
 prop_common_complete r s =
-  common r c (eraseDisjoints r c s) (eraseSubtypes r c s) /= Nothing
+  case (eraseDisjoints r c s, eraseSubtypes r c s) of
+    (a,b) | a /= b -> common r c a b =/= Nothing
+    _ -> property Discard
   where c = root s + 1
 
 prop_common_eq :: TR -> BDD -> Property
@@ -136,35 +163,52 @@ prop_common_correct2 r s =
       Just k = common r c t e
   in modelDiff r (select c t e) k === []
 
-prop_commonOrErase :: TR -> BDD -> BDD -> Property
-prop_commonOrErase r t e =
-  let c = max (root t) (root e) + 1
-      t' = eraseDisjoints r c t
+prop_common_complement :: TR -> BDD -> Property
+prop_common_complement r (bdd -> Select c t e) =
+  case common r c t e of
+    Just s -> common r c (complement t) (complement e) === Just (complement s)
+    Nothing -> property Discard
+prop_common_complement _ _ = property Discard
+
+prop_commonOrErase_refl :: TR -> BDD -> Property
+prop_commonOrErase_refl r b =
+  let c = root b + 1
+      t = eraseDisjoints r c b
+      e = eraseSubtypes r c b
+      Just s = common r c t e
+  in commonOrErase r c b b === (t, e, Just s)
+
+prop_commonOrErase :: TR -> BDD -> Property
+prop_commonOrErase r (bdd -> Select c t e) =
+  let t' = eraseDisjoints r c t
       e' = eraseSubtypes r c e
   in commonOrErase r c t e === (t', e', common r c t' e')
+prop_commonOrErase _ _ = property Discard
 
 prop_size_counter :: Property
-prop_size_counter = prop_common_size r t e where
+prop_size_counter = prop_common_size r (select 11 t e) where
   r = mkDag [(2,[1]),(3,[1,2]),(8,[1,2,5,6,7]),(9,[1,2,4,5,6]),(10,[0,1,2,4,5,6,9]),(11,[1,2,3,4,5,6,7,9])]
   t = complement (select 10 (complement (select 4 Top (base 1))) Bot)
   e = complement (select 10 (complement (select 5 (base 0) Bot)) Bot)
 
 -- Last because high rejection rates.
-prop_common_size :: TR -> BDD -> BDD -> Property
-prop_common_size r t e =
-  let c = max (root t) (root e) + 1
-      t' = fullyErase r t
+prop_common_size :: TR -> BDD -> Property
+prop_common_size r (bdd -> Select c t e) =
+  let t' = fullyErase r t
       e' = fullyErase r e
   in case common r c t' e' of
-        Just s -> property $ size s <= size t' + size e'
+        Just s -> counterexample (show (c, t', e', s)) $ size s <= size t' + size e'
         Nothing -> property Discard
+prop_common_size _ _ = property Discard
 
-prop_common_correct1 :: TR -> BDD -> BDD -> Property
-prop_common_correct1 r t e =
-  let c = max (root t) (root e) + 1
-  in case common r c t e of
+prop_common_correct1 :: TR -> BDD -> Property
+prop_common_correct1 r (bdd -> Select c t e) =
+  let t' = fullyErase r t
+      e' = fullyErase r e
+  in case common r c t' e' of
         Just s -> modelDiff r (select c t e) s === []
         Nothing -> property Discard
+prop_common_correct1 _ _ = property Discard
 
 ------------------------------------------------------------
 
