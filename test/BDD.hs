@@ -47,22 +47,15 @@ mkPos b
   | rightmost b = complement b
   | otherwise = b
 
-prop_eraseSubtypes :: TR -> BDD -> NonNegative Base -> Property
-prop_eraseSubtypes r b (NonNegative i) =
-  modelDiff r
-    (basicDifference (mkPos b) (base i))
-    (eraseSubtypes r i (mkPos b)) === []
-
 prop_eraseDisjoints_root :: TR -> BDD -> Property
 prop_eraseDisjoints_root r b@(bdd -> Select i t e) =
   modelDiff r b (select i (eraseDisjoints r i t) e) === []
 prop_eraseDisjoints_root _ _ = property Discard
 
-prop_eraseDisjoints :: TR -> BDD -> NonNegative Base -> Property
-prop_eraseDisjoints r b (NonNegative i) =
-  modelDiff r
-    (basicIntersect (mkPos b) (base i))
-    (eraseDisjoints r i (mkPos b)) === []
+prop_erase_root :: TR -> BDD -> Property
+prop_erase_root r b@(bdd -> Select i t e) =
+  modelDiff r b (select i (eraseDisjoints r i t) (eraseSubtypes r i e)) === []
+prop_erase_root _ _ = property Discard
 
 prop_fullyErase :: TR -> BDD -> Property
 prop_fullyErase r b = modelDiff r b (fullyErase r b) === []
@@ -94,7 +87,7 @@ prop_common_correct1 r t e =
 
 prop_common_correct2 :: TR -> BDD -> Property
 prop_common_correct2 r s =
-  let c = max (root t) (root e) + 1
+  let c = root s + 1
       t = eraseDisjoints r c s
       e = eraseSubtypes r c s
       Just k = common r c t e
@@ -103,9 +96,17 @@ prop_common_correct2 r s =
 prop_common_size :: TR -> BDD -> BDD -> Property
 prop_common_size r t e =
   let c = max (root t) (root e) + 1
-  in case common r c t e of
-        Just s -> property $ size s <= size t + size e
+      t' = fullyErase r t
+      e' = fullyErase r e
+  in case common r c t' e' of
+        Just s -> property $ size s <= size t' + size e'
         Nothing -> property Discard
+
+prop_size_counter :: Property
+prop_size_counter = prop_common_size r t e where
+  r = mkDag [(2,[1]),(3,[1,2]),(8,[1,2,5,6,7]),(9,[1,2,4,5,6]),(10,[0,1,2,4,5,6,9]),(11,[1,2,3,4,5,6,7,9])]
+  t = complement (select 10 (complement (select 4 Top (base 1))) Bot)
+  e = complement (select 10 (complement (select 5 (base 0) Bot)) Bot)
 
 ------------------------------------------------------------
 
@@ -122,4 +123,4 @@ qcs s = quickCheckWith (stdArgs{ maxSuccess = 1000, maxSize = s, maxDiscardRatio
 return []
 
 bddTestAll :: IO Bool
-bddTestAll = $quickCheckAll
+bddTestAll = $forAllProperties (quickCheckWithResult (stdArgs{maxSuccess=1000, maxDiscardRatio=1000}))
