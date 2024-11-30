@@ -1,0 +1,3 @@
+:m +BDDSubtyping.BDD
+:m +BDDSubtyping.DAG
+:m +Test.QuickCheck

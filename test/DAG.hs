@@ -8,12 +8,17 @@ import BDDSubtyping.DAG
 instance Arbitrary DAG where
   arbitrary = mkDag <$> sized dag where
     dag :: Int -> Gen [(Int,[Int])]
-    dag 0 = return [(0,[])]
+    dag 0 = return []
     dag n = do
       d <- dag (n - 1)
       n_edges <- chooseInt (0, n-1)
       edges <- replicateM n_edges (choose (0, n-1))
       return ((n,edges):d)
+  shrink dag = mkDag <$> deletions (unMkDag dag)
+    where
+      deletions :: [a] -> [[a]]
+      deletions [] = []
+      deletions (x:xs) = xs : ((x:) <$> deletions xs)
 
 type TNode = NonNegative Node
 
@@ -38,6 +43,17 @@ prop_dag_trans dag (NonNegative a) (NonNegative b) (NonNegative c) =
     (MayIntersect, Disjoint, d) -> d === Disjoint .||. d === MayIntersect
     (Disjoint, _, _) -> property True
     d -> counterexample (show d) False
+
+prop_dagMax_exists :: DAG -> Property
+prop_dagMax_exists d
+  | m == -1 = property Discard
+  | otherwise = subs d m =/= mempty
+  where m = dagMax d
+
+prop_dagMax_max :: DAG -> TNode -> Property
+prop_dagMax_max d (NonNegative a)
+  | subs d a /= mempty = property (a <= dagMax d)
+  | otherwise = property Discard
 
 return []
 

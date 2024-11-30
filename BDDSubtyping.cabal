@@ -96,7 +96,8 @@ test-suite BDDSubtyping-test
     type:             exitcode-stdio-1.0
 
     -- Directories containing source files.
-    hs-source-dirs:   test
+    hs-source-dirs:
+        test
 
     -- The entrypoint to the test suite.
     main-is:          Main.hs

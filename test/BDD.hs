@@ -1,11 +1,15 @@
 {-# LANGUAGE TemplateHaskell, ViewPatterns #-}
 module BDD where
 import Test.QuickCheck
+import qualified Data.IntSet as S
 
 import BDDSubtyping.BDD
-import BDDSubtyping.DAG(mkDag)
+import BDDSubtyping.DAG(mkDag, subs, tr, Relatedness(..))
 import DAG() -- for Arbitrary DAG
 
+type NBase = NonNegative Base
+nn :: NonNegative i -> i
+nn (NonNegative i) = i
 
 instance Arbitrary BDD where
   arbitrary = sized mkBdd where
@@ -16,34 +20,61 @@ instance Arbitrary BDD where
       e <- chooseInt (-2, n-1) >>= mkBdd
       return (select (n-1) t e)
 
-prop_bdd_big :: TR -> BDD -> NonNegative Base -> Property
-prop_bdd_big r b (NonNegative i) =
+prop_bdd_big :: TR -> BDD -> NBase -> Property
+prop_bdd_big r b (nn -> i) =
   bddBases r b (root b + i + 1) === rightmost b
 
-prop_base_empty :: NonNegative Base -> Property
-prop_base_empty (NonNegative i) =
-  model (mkDag []) (base i) === (replicate i False ++ [True, False])
+prop_base_empty :: NBase -> Property
+prop_base_empty (nn -> i) =
+  model (mkDag []) (base i) === [i]
 
-prop_base :: TR -> NonNegative Base -> Property
-prop_base r (NonNegative i) =
-  drop i (model r (base i)) === [True, False]
+prop_base :: TR -> NBase -> Property
+prop_base r (nn -> i) =
+  model r (base i) === S.toAscList (S.insert i (subs r i))
 
-prop_bases_bot :: TR -> NonNegative Base -> Property
-prop_bases_bot r (NonNegative i) = bddBases r Bot i === False
+prop_fv_base :: NBase -> Property
+prop_fv_base (nn -> i) =
+  fv (base i) === S.singleton i
 
-prop_bases_top :: TR -> NonNegative Base -> Property
-prop_bases_top r (NonNegative i) = bddBases r Top i === True
+prop_exactly :: TR -> NBase -> Property
+prop_exactly r (nn -> i) =
+  model r (exactly i) === [i]
 
-prop_bases_base :: TR -> NonNegative Base -> Property
-prop_bases_base r (NonNegative i) = bddBases r (base i) i === True
+prop_fv_exactly :: NBase -> Property
+prop_fv_exactly (nn -> i) =
+  fv (exactly i) === S.singleton i
+
+prop_bases_bot :: TR -> NBase -> Property
+prop_bases_bot r (nn -> i) = bddBases r Bot i === False
+
+prop_fv_bot :: Property
+prop_fv_bot = fv Bot === mempty
+
+prop_bases_top :: TR -> NBase -> Property
+prop_bases_top r (nn -> i) = bddBases r Top i === True
+
+prop_fv_top :: Property
+prop_fv_top = fv Top === mempty
+
+prop_bases_base :: TR -> NBase -> Property
+prop_bases_base r (nn -> i) = bddBases r (base i) i === True
 
 prop_complement :: TR -> BDD -> Property
-prop_complement r a = model r a === fmap not (model r (complement a))
+prop_complement r a = modelDiff r a (complement a) === [0..root a + 1]
 
-prop_union :: TR -> BDD -> BDD -> Bool
+prop_fv_complement :: BDD -> Property
+prop_fv_complement a = fv a === fv (complement a)
+
+prop_union :: TR -> BDD -> BDD -> Property
 prop_union r a b =
-  and $ zipWith (\i v -> (bddBases r a i || bddBases r b i) == v)
-                [0..] (model r (basicUnion a b))
+  let u = basicUnion a b
+  in filter
+       (\i -> (bddBases r a i || bddBases r b i) /= bddBases r u i)
+       [0..1+maximum[root a, root b, root u]] === []
+
+-- This is only true of *basic* union!
+prop_fv_union :: BDD -> BDD -> Bool
+prop_fv_union a b = fv (a `basicUnion` b) `S.isSubsetOf` (fv a <> fv b)
 
 prop_union_idem :: BDD -> Property
 prop_union_idem a = (a `basicUnion` a) === a
@@ -81,46 +112,63 @@ prop_robbins a b = complement (complement (a `basicUnion` b) `basicUnion` comple
 prop_robbins2 :: BDD -> BDD -> Property
 prop_robbins2 a b = ((a `basicUnion` b) `basicIntersect` (a `basicUnion` complement b)) === a
 
-
 prop_eraseSubtypes_root :: TR -> BDD -> Property
 prop_eraseSubtypes_root r b@(bdd -> Select i t e) =
   modelDiff r b (select i t (eraseSubtypes r i e)) === []
 prop_eraseSubtypes_root _ _ = property Discard
 
-prop_eraseSubtypes_complement :: TR -> BDD -> Property
-prop_eraseSubtypes_complement r b =
+prop_eraseSubtypes_fv :: TR -> NBase -> BDD -> Property
+prop_eraseSubtypes_fv r (nn -> ii) e
+  | iSubs `S.disjoint` fve = erased === e
+  | otherwise = property (fv erased `S.isSubsetOf` (fve `S.difference` iSubs))
+  where iSubs = subs r i
+        fve = fv e
+        erased = eraseSubtypes r i e
+        i = root e + ii + 1
+
+prop_eraseSubtypes_complement :: TR -> NBase -> BDD -> Property
+prop_eraseSubtypes_complement r (nn -> i) b =
   complement (eraseSubtypes r c b) === eraseSubtypes r c (complement b)
-  where c = 1 + root b
+  where c = root b + i + 1
 
-prop_eraseSubtypes_idem :: TR -> BDD -> Property
-prop_eraseSubtypes_idem r b =
+prop_eraseSubtypes_idem :: TR -> NBase -> BDD -> Property
+prop_eraseSubtypes_idem r (nn -> i) b =
   eraseSubtypes r c (eraseSubtypes r c b) === eraseSubtypes r c b
-  where c = 1 + root b
+  where c = root b + i + 1
 
-prop_eraseSubtypes_union :: TR -> BDD -> BDD -> Property
-prop_eraseSubtypes_union r a b =
+prop_eraseSubtypes_union :: TR -> NBase -> BDD -> BDD -> Property
+prop_eraseSubtypes_union r (nn -> i) a b =
   eraseSubtypes r c (a `basicUnion` b) === (eraseSubtypes r c a `basicUnion` eraseSubtypes r c b)
-  where c = 1 + (root a `max` root b)
+  where c = (root a `max` root b) + i + 1
 
 prop_eraseDisjoints_root :: TR -> BDD -> Property
 prop_eraseDisjoints_root r b@(bdd -> Select i t e) =
   modelDiff r b (select i (eraseDisjoints r i t) e) === []
 prop_eraseDisjoints_root _ _ = property Discard
 
-prop_eraseDisjoints_complement :: TR -> BDD -> Property
-prop_eraseDisjoints_complement r b =
+prop_eraseDisjoints_fv :: TR -> NBase -> BDD -> Property
+prop_eraseDisjoints_fv r (nn -> ii) e
+  | iDisjs `S.disjoint` fve = erased === e
+  | otherwise = property (fv erased `S.isSubsetOf` (fve `S.difference` iDisjs))
+  where iDisjs = S.fromList (filter ((Disjoint==). tr r i) [0..i-1])
+        fve = fv e
+        erased = eraseDisjoints r i e
+        i = root e + ii + 1
+
+prop_eraseDisjoints_complement :: TR -> NBase -> BDD -> Property
+prop_eraseDisjoints_complement r (nn -> i) b =
   complement (eraseDisjoints r c b) === eraseDisjoints r c (complement b)
-  where c = 1 + root b
+  where c = root b + i + 1
 
-prop_eraseDisjoints_idem :: TR -> BDD -> Property
-prop_eraseDisjoints_idem r b =
+prop_eraseDisjoints_idem :: TR -> NBase -> BDD -> Property
+prop_eraseDisjoints_idem r (nn -> i) b =
   eraseDisjoints r c (eraseDisjoints r c b) === eraseDisjoints r c b
-  where c = 1 + root b
+  where c = root b + i + 1
 
-prop_eraseDisjoints_union :: TR -> BDD -> BDD -> Property
-prop_eraseDisjoints_union r a b =
+prop_eraseDisjoints_union :: TR -> NBase -> BDD -> BDD -> Property
+prop_eraseDisjoints_union r (nn -> i) a b =
   eraseDisjoints r c (a `basicUnion` b) === (eraseDisjoints r c a `basicUnion` eraseDisjoints r c b)
-  where c = 1 + (root a `max` root b)
+  where c = (root a `max` root b) + i + 1
 
 prop_erase_root :: TR -> BDD -> Property
 prop_erase_root r b@(bdd -> Select i t e) =
@@ -130,6 +178,12 @@ prop_erase_root _ _ = property Discard
 prop_fullyErase :: TR -> BDD -> Property
 prop_fullyErase r b = modelDiff r b (fullyErase r b) === []
 
+prop_fullyErase_idem :: TR -> BDD -> Property
+prop_fullyErase_idem r b =
+  c === fullyErase r c
+  where c = fullyErase r b
+
+-- common always succeeds when handed two equal BDDs
 prop_common_refl :: TR -> BDD -> Property
 prop_common_refl r b =
   case common r (1 + root b) b b of
@@ -138,10 +192,21 @@ prop_common_refl r b =
 
 prop_common :: TR -> BDD -> Property
 prop_common r b@(bdd -> Select i t e) =
-  case common r i t e of
+  let t' = eraseDisjoints r i t
+      e' = eraseSubtypes r i e
+  in case common r i t' e' of
     Just c -> modelDiff r b c === []
-    Nothing -> property Discard
+    Nothing -> t =/= e .&&. t' =/= e'
 prop_common _ _ = property Discard
+
+prop_common_fv :: TR -> BDD -> Property
+prop_common_fv r (bdd -> Select i t e) =
+  let t' = eraseDisjoints r i t
+      e' = eraseSubtypes r i e
+  in case common r i t' e' of
+    Just c -> property (fv c `S.isSubsetOf` (fv t' <> fv e'))
+    Nothing -> t =/= e .&&. t' =/= e'
+prop_common_fv _ _ = property Discard
 
 prop_common_complete :: TR -> BDD -> Property
 prop_common_complete r s =
@@ -165,8 +230,10 @@ prop_common_correct2 r s =
 
 prop_common_complement :: TR -> BDD -> Property
 prop_common_complement r (bdd -> Select c t e) =
-  case common r c t e of
-    Just s -> common r c (complement t) (complement e) === Just (complement s)
+  let t' = eraseDisjoints r c t
+      e' = eraseSubtypes r c e
+  in case common r c t' e' of
+    Just s -> common r c (complement t') (complement e') === Just (complement s)
     Nothing -> property Discard
 prop_common_complement _ _ = property Discard
 
@@ -185,30 +252,49 @@ prop_commonOrErase r (bdd -> Select c t e) =
   in commonOrErase r c t e === (t', e', common r c t' e')
 prop_commonOrErase _ _ = property Discard
 
-prop_size_counter :: Property
-prop_size_counter = prop_common_size r (select 11 t e) where
-  r = mkDag [(2,[1]),(3,[1,2]),(8,[1,2,5,6,7]),(9,[1,2,4,5,6]),(10,[0,1,2,4,5,6,9]),(11,[1,2,3,4,5,6,7,9])]
-  t = complement (select 10 (complement (select 4 Top (base 1))) Bot)
-  e = complement (select 10 (complement (select 5 (base 0) Bot)) Bot)
+canon_idem :: (TR -> BDD -> BDD) -> TR -> BDD -> Property
+canon_idem canon r b =
+  counterexample (unlines $ map show cs) (c == canon r c)
+  where
+    c = canon r b
+    cc name can = let c' = can r b in (name, c', can r c')
+    cs = [ ct | ct@(_,c1,c2) <- [cc "canonTD" canonTD, cc "canonBU" canonBU, cc "canonS" canonS, cc "canonW" canonW], c1 /= c2]
+
+-- Believed false
+prop_canonTD_idem :: TR -> BDD -> Property
+prop_canonTD_idem = canon_idem canonTD
+
+-- Believed false
+prop_canonBU_idem :: TR -> BDD -> Property
+prop_canonBU_idem = canon_idem canonBU
+
+-- True?
+prop_canonS_idem :: TR -> BDD -> Property
+prop_canonS_idem = canon_idem canonS
+
+-- True????
+prop_canonW_idem :: TR -> BDD -> Property
+prop_canonW_idem = canon_idem canonW
+
+prop_isBottom :: TR -> BDD -> Property
+prop_isBottom r b
+ | isBottom r b = counterexample "bottom" (model r b === [])
+ | otherwise = counterexample "nonbottom" (model r b =/= [])
 
 -- Last because high rejection rates.
-prop_common_size :: TR -> BDD -> Property
-prop_common_size r (bdd -> Select c t e) =
-  let t' = fullyErase r t
-      e' = fullyErase r e
-  in case common r c t' e' of
-        Just s -> counterexample (show (c, t', e', s)) $ size s <= size t' + size e'
-        Nothing -> property Discard
-prop_common_size _ _ = property Discard
-
 prop_common_correct1 :: TR -> BDD -> Property
-prop_common_correct1 r (bdd -> Select c t e) =
-  let t' = fullyErase r t
-      e' = fullyErase r e
+prop_common_correct1 r b@(bdd -> Select c t e) =
+  let t' = eraseDisjoints r c t
+      e' = eraseSubtypes r c e
   in case common r c t' e' of
-        Just s -> modelDiff r (select c t e) s === []
+        Just s -> modelDiff r b s === []
         Nothing -> property Discard
 prop_common_correct1 _ _ = property Discard
+
+-- This just takes ages.
+prop_trToBDD_top :: TR -> Property
+prop_trToBDD_top r =
+  modelDiff r Top (trToBDD r) === []
 
 ------------------------------------------------------------
 
@@ -220,9 +306,9 @@ qc :: (Testable t) => t -> IO ()
 qc = qcs 12
 
 qcs :: (Testable t) => Int -> t -> IO ()
-qcs s = quickCheckWith (stdArgs{ maxSuccess = 1000, maxSize = s, maxDiscardRatio = 3 })
+qcs s = quickCheckWith (stdArgs{ maxSuccess = 10000, maxSize = s, maxDiscardRatio = 3 })
 
 return []
 
 bddTestAll :: IO Bool
-bddTestAll = $forAllProperties (quickCheckWithResult (stdArgs{maxSuccess=1000, maxDiscardRatio=1000}))
+bddTestAll = $forAllProperties (quickCheckWithResult (stdArgs{maxSuccess=10000, maxDiscardRatio=1000}))

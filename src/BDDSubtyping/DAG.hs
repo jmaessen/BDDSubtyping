@@ -1,4 +1,8 @@
-module BDDSubtyping.DAG(DAG, Node, tr, mkDag, invalidEdges, subs, Relatedness(..)) where
+module BDDSubtyping.DAG(
+  DAG, Node,
+  tr, Relatedness(..),
+  mkDag, unMkDag,
+  invalidEdges, subs, dagMax) where
 import Data.IntMap.Strict(IntMap, (!?))
 import qualified Data.IntMap.Strict as M
 import qualified Data.IntSet as S
@@ -17,6 +21,9 @@ instance Show DAG where
 mkDag :: [(Node, [Node])] -> DAG
 mkDag ns =
   DAG $ tc (M.fromList [(i, S.fromList es) | (i, es) <- ns, not (null es)])
+
+unMkDag :: DAG -> [(Node, [Node])]
+unMkDag (DAG d) = [(n, S.toList es) | (n, es) <- M.toList d]
 
 -- Given a DAG, return a list of invalid edges.  This should be empty.
 invalidEdges :: DAG -> [(Node, Node)]
@@ -44,5 +51,9 @@ tr (DAG d) a b =
     _ -> Disjoint
 
 -- Subtypes
-subs :: DAG -> Node -> [Node]
-subs (DAG d) a = S.toList $ M.findWithDefault mempty a d
+subs :: DAG -> Node -> IntSet
+subs (DAG d) a = M.findWithDefault mempty a d
+
+-- Maximum value in DAG, or (-1) if none.
+dagMax :: DAG -> Node
+dagMax (DAG d) = maybe (-1) fst $ M.lookupMax d
