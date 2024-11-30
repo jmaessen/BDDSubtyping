@@ -2,6 +2,7 @@
 module DAG where
 import Control.Monad(replicateM)
 import Test.QuickCheck
+import qualified Data.IntSet as S
 
 import BDDSubtyping.DAG
 
@@ -14,11 +15,21 @@ instance Arbitrary DAG where
       n_edges <- chooseInt (0, n-1)
       edges <- replicateM n_edges (choose (0, n-1))
       return ((n,edges):d)
-  shrink dag = mkDag <$> deletions (unMkDag dag)
+  shrink dag = mkDag <$> (deletions um ++ elims)
     where
+      um = unMkDag dag
+      -- Delete single list elements
       deletions :: [a] -> [[a]]
       deletions [] = []
       deletions (x:xs) = xs : ((x:) <$> deletions xs)
+      -- Delete mentioned variables that are not lhses
+      elims =
+        [ [(a, filter (/= e) vs) | (a,vs) <- um ] |
+          e <- S.toList (used `S.difference` incls)]
+        where
+          (incls, used) = mconcat $
+            [(S.singleton a, S.fromAscList bs) |
+              (a,bs) <- um]
 
 type TNode = NonNegative Node
 

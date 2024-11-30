@@ -14,6 +14,8 @@ module BDDSubtyping.BDD(
 import BDDSubtyping.DAG(DAG, Relatedness(..), tr, unMkDag)
 import Control.Monad(liftM2)
 import qualified Data.IntSet as S
+import qualified Data.IntMap as M
+import Data.IntMap((!))
 
 type Base = Int
 
@@ -46,16 +48,23 @@ instance Show RNBDD where
     showParen True
       (("select "++) . shows i . (' ':) . shows t . (' ':) . shows e)
 
-class FV a where
+class Show a => FV a where
   fv :: a -> S.IntSet
+  rename :: M.IntMap Base -> a -> a
+  showIt :: a -> ShowS
+  showIt = shows
 
 instance FV BDD where
   fv (BDD _ b) = fv b
+  rename r (BDD p b) = BDD p (rename r b)
 
 instance FV RNBDD where
   fv None = mempty
   fv (Sel i t e) = S.insert i (fv t <> fv e)
   fv (Eq i e) = S.insert i (fv e)
+  rename _ None = None
+  rename r (Sel i t e) = sel (r!i) (rename r t) (rename r e)
+  rename r (Eq i e) = Eq (r!i) $ rename r e
 
 -- Take the complement of a BDD. O(1).
 complement :: BDD -> BDD
