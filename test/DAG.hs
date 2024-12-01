@@ -31,6 +31,22 @@ instance Arbitrary DAG where
             [(S.singleton a, S.fromAscList bs) |
               (a,bs) <- um]
 
+class Dot a where
+  toDot :: a -> [String]
+  dot :: a -> String
+  dot d = "digraph {\n" ++ unlines (toDot d) ++ "}"
+
+instance Dot DAG where
+  toDot d =
+    "rankdir = BT;":
+    "node [ shape =\"box\" ];":
+    concatMap toEdges ttd
+    where
+      ttd = tt d
+      toEdges :: (Node, [Node]) -> [String]
+      toEdges (n,vs) = fmap (\v -> "T" ++ shows v r) vs
+        where r = " -> T"++show n
+
 type TNode = NonNegative Node
 
 prop_dag_valid :: DAG -> Property

@@ -1,13 +1,13 @@
 module BDDSubtyping.DAG(
   DAG, Node,
   tr, Relatedness(..),
-  mkDag, unMkDag,
+  mkDag, unMkDag, tt,
   invalidEdges, subs, dagMax) where
 import Data.IntMap.Strict(IntMap, (!?))
 import qualified Data.IntMap.Strict as M
-import qualified Data.IntSet as S
 import Data.IntSet(IntSet)
-import Data.List(foldl')
+import qualified Data.IntSet as S
+import Data.Foldable
 
 type Node = Int
 
@@ -15,8 +15,7 @@ newtype DAG = DAG (IntMap IntSet)
   deriving (Eq)
 
 instance Show DAG where
-  showsPrec _ (DAG d) = ("mkDag " ++) . showgr d
-    where showgr g = shows [(i, S.toList es) | (i, es) <- M.toList g]
+  showsPrec _ d = ("mkDag " ++) . shows (tt d)
 
 mkDag :: [(Node, [Node])] -> DAG
 mkDag ns =
@@ -29,6 +28,13 @@ unMkDag (DAG d) = [(n, S.toList es) | (n, es) <- M.toList d]
 invalidEdges :: DAG -> [(Node, Node)]
 invalidEdges (DAG d) =
   [(a,b) | (a,bs) <- M.toList d, b <- S.toList bs, a < b]
+
+-- Transitive trim.  Reduces DAG to minimal dependencies and unmakes it.
+tt :: DAG -> [(Node, [Node])]
+tt (DAG d) =
+  [(v, S.toList (as `S.difference` ts)) |
+    (v, as) <- M.toList d,
+    let ts = foldMap (\a -> M.findWithDefault mempty a d) (S.toList as)]
 
 -- Transitive closure.  Assumes topologically sorted node numbering.
 tc :: IntMap IntSet -> IntMap IntSet

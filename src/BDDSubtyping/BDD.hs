@@ -1,6 +1,7 @@
 {-# LANGUAGE PatternSynonyms, ViewPatterns #-}
 module BDDSubtyping.BDD(
   BDD, TR, Base, BDDPat(..), pattern Bot, pattern Top,
+  toGraph, fromGraph,
   select, base, exact, exactly,
   root, size, rightmost, bdd, FV(..),
   bddBases, model, modelDiff,
@@ -14,7 +15,8 @@ module BDDSubtyping.BDD(
 import BDDSubtyping.DAG(DAG, Relatedness(..), tr, unMkDag)
 import Control.Monad(liftM2)
 import qualified Data.IntSet as S
-import qualified Data.IntMap as M
+import qualified Data.IntMap.Strict as M
+import qualified Data.Map.Strict as DM
 import Data.IntMap((!))
 
 type Base = Int
@@ -77,10 +79,40 @@ pattern Bot = BDD Pos None
 pattern Top :: BDD
 pattern Top = BDD Not None
 
-data BDDPat = BotP | Select Base BDD BDD | TopP | Exact Base Bool BDD deriving (Show)
+data BDDPat r = BotP | Select Base r r | Exact Base Bool r | TopP deriving (Eq, Ord, Show)
+
+type BDDGraph = M.IntMap (BDDPat Int)
+
+toGraph :: BDD -> BDDGraph
+toGraph b0 = gf where
+  (_, gf, _) = loop b0 mempty mempty
+  loop b gr hc = loop' (bdd b) gr hc
+  loop' (Select i t e) gr hc =
+    let (e', gre, hce) = loop e gr hc
+        (t', grt, hct) = loop t gre hce
+        v = Select i t' e'
+    in node v grt hct
+  loop' (Exact i m e) gr hc =
+    let (e', gre, hce) = loop e gr hc
+        v = Exact i m e'
+    in node v gre hce
+  loop' TopP gr hc = node TopP gr hc
+  loop' BotP gr hc = node BotP gr hc
+  node p gr hc
+    | Just n <- DM.lookup p hc = (n, gr, hc)
+    | otherwise = (s, M.insert s p gr, DM.insert p s hc)
+    where s = M.size gr
+
+fromGraph :: BDDGraph -> BDD
+fromGraph g = g'!(M.size g - 1) where
+  g' = fmap convert g
+  convert BotP = Bot
+  convert TopP = Top
+  convert (Select i t e) = select i (g'!t) (g'!e)
+  convert (Exact i m e) = exact i m (g'!e)
 
 -- A pattern matcher for BDDs that abstracts away RNBDD.
-bdd :: BDD -> BDDPat
+bdd :: BDD -> BDDPat BDD
 bdd (BDD Pos None) = BotP
 bdd (BDD Not None) = TopP
 bdd (BDD Pos (Sel v t e)) = Select v t (BDD Pos e)

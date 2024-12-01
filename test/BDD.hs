@@ -7,11 +7,15 @@ import Data.IntMap((!))
 
 import BDDSubtyping.BDD
 import BDDSubtyping.DAG(mkDag, unMkDag, subs, tr, Relatedness(..))
-import DAG() -- for Arbitrary DAG
+import DAG(Dot(..)) -- + Arbitrary DAG
 
 type BaseInc = Positive Base
 p :: Positive i -> i
 p (Positive i) = i
+
+type NBase = NonNegative Base
+nn :: NonNegative i -> i
+nn (NonNegative i) = i
 
 instance Arbitrary BDD where
   arbitrary = sized mkBdd where
@@ -67,9 +71,9 @@ instance (FV a, FV b, FV c) => FV (a,b,c) where
   showIt (a,b,c) =
     showParen True (shows a . ("\n  b = "++) . shows b . ("\n  c = "++) . shows c)
 
-instance FV (NonNegative Base) where
-  fv (NonNegative b) = S.singleton b
-  rename r (NonNegative b) = NonNegative (r!b)
+instance FV NBase where
+  fv (nn -> b) = S.singleton b
+  rename r (nn -> b) = NonNegative (r!b)
 
 instance FV BaseInc where
   fv _ = mempty
@@ -85,45 +89,81 @@ instance FV TR where
           , not (null bs')
           ]
 
+-- Draw BDD as DAG
+instance Dot BDD where
+  toDot b0 = [ l | (n, b) <- M.toList g, l <- node n b ]
+    where
+      g = toGraph b0
+      node n (Select i t e) =
+        let (tid, tl) = ref n t
+            (eid, el) = ref n e
+            sn = show n
+        in ["  N"++sn++" [label=\""++show i++"\"];",
+            "  N"++sn++":sw -> "++tid++";",
+            "  N"++sn++":se -> "++eid++" [style=dashed];"]
+           ++ tl ++ el
+      node n (Exact i m e) =
+        let (eid, el) = ref n e
+            mm | m = "="
+               | otherwise = "!"
+            sn = show n
+        in ["  N"++sn++" [label=\""++mm++show i++"\", shape=box];",
+            "  N"++sn++":s -> "++eid++" [style=dashed];"]
+           ++ el
+      node _ _ = []
+      ref i e = ref' i e (g!e)
+      ref' i _ TopP =
+        let si = show i
+        in ("NT"++si, [ "  NT"++si++" [label=\"T\",shape=none]"])
+      ref' i _ BotP =
+        let si = show i
+        in ("NB"++si, [ "  NB"++si++" [label=\"⟂\",shape=none]"])
+      ref' _ n _ = ("N"++show n, [])
+
+
+prop_graph_id :: TF () BDD -> Property
+prop_graph_id (TF () b) =
+  fromGraph (toGraph b) === b
+
 prop_bdd_big :: TF TR (BDD, BaseInc) -> Property
 prop_bdd_big (TF r (b, p -> i)) =
   bddBases r b (root b + i + 1) === rightmost b
 
-prop_base_empty :: NonNegative Base -> Property
-prop_base_empty (NonNegative i) =
+prop_base_empty :: NBase -> Property
+prop_base_empty (nn -> i) =
   model (mkDag []) (base i) === [i]
 
-prop_base :: TF TR (NonNegative Base) -> Property
-prop_base (TF r (NonNegative i)) =
+prop_base :: TF TR NBase -> Property
+prop_base (TF r (nn -> i)) =
   model r (base i) === S.toAscList (S.insert i (subs r i))
 
-prop_fv_base :: NonNegative Base -> Property
-prop_fv_base (NonNegative i) =
+prop_fv_base :: NBase -> Property
+prop_fv_base (nn -> i) =
   fv (base i) === S.singleton i
 
-prop_exactly :: TF TR (NonNegative Base) -> Property
-prop_exactly (TF r (NonNegative i)) =
+prop_exactly :: TF TR NBase -> Property
+prop_exactly (TF r (nn -> i)) =
   model r (exactly i) === [i]
 
-prop_fv_exactly :: NonNegative Base -> Property
-prop_fv_exactly (NonNegative i) =
+prop_fv_exactly :: NBase -> Property
+prop_fv_exactly (nn -> i) =
   fv (exactly i) === S.singleton i
 
-prop_bases_bot :: TF TR (NonNegative Base) -> Property
-prop_bases_bot (TF r (NonNegative i)) =
+prop_bases_bot :: TF TR NBase -> Property
+prop_bases_bot (TF r (nn -> i)) =
   bddBases r Bot i === False
 
 prop_fv_bot :: Property
 prop_fv_bot = fv Bot === mempty
 
-prop_bases_top :: TF TR (NonNegative Base) -> Property
-prop_bases_top (TF r (NonNegative i)) = bddBases r Top i === True
+prop_bases_top :: TF TR NBase -> Property
+prop_bases_top (TF r (nn -> i)) = bddBases r Top i === True
 
 prop_fv_top :: Property
 prop_fv_top = fv Top === mempty
 
-prop_bases_base :: TF TR (NonNegative Base) -> Property
-prop_bases_base (TF r (NonNegative i)) = bddBases r (base i) i === True
+prop_bases_base :: TF TR NBase -> Property
+prop_bases_base (TF r (nn -> i)) = bddBases r (base i) i === True
 
 prop_complement :: TF TR BDD -> Property
 prop_complement (TF r a) = modelDiff r a (complement a) === [0..root a + 1]
