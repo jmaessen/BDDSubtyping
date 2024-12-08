@@ -124,6 +124,8 @@ bdd (BDD Not (Eq v e)) = Exact v False (BDD Not e)
 -- Basic sel smart constructor that handles elimination.
 sel :: Base -> BDD -> RNBDD -> RNBDD
 sel _ (BDD Pos t) e | t == e = e
+sel i t (Eq i' e) | i == i' = sel i t e
+sel i (BDD Pos (Eq i' t)) e | i == i' && t == e = Eq i' e
 sel i t e = Sel i t e
 
 -- Fundamental select smart constructor that just deals with BDD / RNBDD conversion.
@@ -219,15 +221,19 @@ basicIntersect a0 b0 = loop a0 b0 where
       LT -> select vb (a  `loop` tb) (a  `loop` eb)
   loop a@(bdd -> Exact va ma ea) b@(bdd -> Exact vb mb eb) =
     case compare va vb of
-      GT -> exact va ma (loop ea b)
+      GT -> exact' va ma (loop ea b) b
       EQ -> exact va (ma && mb) (loop ea eb)
-      LT -> exact vb mb (loop a eb)
+      LT -> exact' vb mb (loop eb a) a
   loop a@(bdd -> Select va ta ea) b@(bdd -> Exact vb mb eb) =
     case compare va vb of
       GT -> select va (loop ta b) (loop ea b)
       EQ -> select va (loop ta b) (loop ea eb)
-      LT -> exact vb mb (loop a eb)
+      LT -> exact' vb mb (loop a eb) a
   loop a{- Exact _ _ _ -} b{- Select _ _ _ -} = loop b a
+  exact' v True e b
+    | rightmost b = exact v True e
+    | otherwise = e
+  exact' v False e _ = exact v False e
 
 basicUnion :: BDD -> BDD -> BDD
 basicUnion a b = complement $ basicIntersect (complement a) (complement b)
@@ -242,6 +248,8 @@ basicEqv :: BDD -> BDD -> BDD
 basicEqv a b = basicImplies a b `basicIntersect` basicImplies b a
 
 -- Convert TR to equivalent BDD.
+-- Type exclusion requires us to explicitly include the notion of exact types!
+-- Ex: Brown ∩ Dog cannot be exactly Brown or Dog, it must be *strictly* less.
 trToBDD :: TR -> BDD
 trToBDD r =
   foldr basicIntersect Top $
@@ -294,18 +302,19 @@ common r c t0 e0 = loop t0 e0 where
       GT -> thenHigh it tt et e
       EQ -> selectM it (loop tt te) (loop et ee)
       LT -> elseHigh t ie te ee
-  loop t@(bdd -> Select it tt et) e@(bdd -> Exact ie me ee)
+  loop (bdd -> Select it tt et) e@(bdd -> Exact ie _ _)
     | it >= ie = thenHigh it tt et e
-    | otherwise = exact ie me <$> loop t ee
-  loop t@(bdd -> Exact it mt et) e@(bdd -> Select ie te ee)
+  loop t@(bdd -> Exact it _ _) (bdd -> Select ie te ee)
     | ie >= it = elseHigh t ie te ee
-    | otherwise = exact it mt <$> loop et e
   loop t@(bdd -> Exact it mt et) e@(bdd -> Exact ie me ee) =
     case compare it ie of
-      LT -> exact it mt <$> loop et e
-      EQ | mt == me -> exact it mt <$> loop et ee
-      EQ -> Nothing
-      GT -> exact ie me <$> loop t ee
+      GT -> exact it mt <$> loop et e
+      -- The EQ case shouldn't happen in properly-erased BDDs.
+      EQ | mt /= me -> Nothing
+         | otherwise -> exact it mt <$> loop et ee
+      LT -> exact ie me <$> loop t ee
+  loop (bdd -> Exact it mt et) e = exact it mt <$> loop et e
+  loop t (bdd -> Exact ie me ee) = exact ie me <$> loop t ee
   loop (bdd -> Select it tt et) e = thenHigh it tt et e
   loop t (bdd -> Select ie te ee) = elseHigh t ie te ee
   loop Top Bot = Nothing
@@ -334,6 +343,19 @@ commonOrErase r c t0 e0 = loop t0 e0 where
       (GT, cmp) -> thenHigh cmp it tt et e
       (EQ, cmp) -> same cmp it tt et te ee
       (LT, _) -> elseHigh (tr r ie c) t ie te ee
+  loop (bdd -> Select it tt et) e@(bdd -> Exact ie _ _)
+    | it >= ie = thenHigh (tr r it c) it tt et e
+  loop t@(bdd -> Exact it _ _) (bdd -> Select ie te ee)
+    | ie >= it = elseHigh (tr r ie c) t ie te ee
+  loop t@(bdd -> Exact it mt et) e@(bdd -> Exact ie me ee) =
+    case compare it ie of
+      GT -> thenExact it mt et e
+      EQ | tr r it c == Subtype -> (exact it mt et', ee', exact it mt <$> e')
+         | otherwise -> (et', exact ie me ee', exact ie me <$> e')
+         where (et', ee', e') = loop et ee
+      LT -> elseExact t ie me ee
+  loop (bdd -> Exact it mt et) e = thenExact it mt et e
+  loop t (bdd -> Exact ie me ee) = elseExact t ie me ee
   loop (bdd -> Select it tt et) e = thenHigh (tr r it c) it tt et e
   loop t (bdd -> Select ie te ee) = elseHigh (tr r ie c) t ie te ee
   loop Top Bot = (Top, Bot, Nothing)
@@ -348,18 +370,28 @@ commonOrErase r c t0 e0 = loop t0 e0 where
   same MayIntersect i tt et te ee = both i tt et te ee
   thenHigh Disjoint _ _ et e = loop et e
   thenHigh Subtype it tt et e
-    | tt' == et' = (et', ee', e')
+    | tt' == et' = f
     | otherwise = (select it tt' et', ee', select it tt' <$> e')
     where tt' = eraseDisjoints r c tt
-          (et', ee', e') = loop et e
+          f@(et', ee', e') = loop et e
   thenHigh MayIntersect it tt et e = both it tt et e e
   elseHigh Subtype t _ _ ee = loop t ee
   elseHigh Disjoint t ie te ee
-    | te' == ee' = (et', ee', e')
+    | te' == ee' = f
     | otherwise = (et', select ie te' ee', select ie te' <$> e')
     where te' = eraseSubtypes r c te
-          (et', ee', e') = loop t ee
+          f@(et', ee', e') = loop t ee
   elseHigh MayIntersect t ie te ee = both ie t t te ee
+  thenExact :: Base -> Bool -> BDD -> BDD -> (BDD, BDD, Maybe BDD)
+  thenExact it mt et e
+    | tr r it c /= Subtype = f
+    | otherwise = (exact it mt et', ee', exact it mt <$> e')
+    where f@(et', ee', e') = loop et e
+  elseExact :: BDD -> Base -> Bool -> BDD -> (BDD, BDD, Maybe BDD)
+  elseExact t ie me ee
+    | tr r ie c == Subtype = f
+    | otherwise = (et', exact ie me ee', exact ie me <$> e')
+    where f@(et', ee', e') = loop t ee
 
 shallowCE :: TR -> BDD -> BDD
 shallowCE r (bdd -> Select i t e) =

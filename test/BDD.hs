@@ -18,26 +18,36 @@ nn :: NonNegative i -> i
 nn (NonNegative i) = i
 
 instance Arbitrary BDD where
-  arbitrary = sized mkBdd where
-    mkBdd :: Int -> Gen BDD
-    mkBdd n | n <= 0 = oneof [return Bot, return Top]
-    mkBdd n = do
-      t <- chooseInt (-2, n-1) >>= mkBdd
-      e <- chooseInt (-2, n-1) >>= mkBdd
-      return (select (n-1) t e)
+  arbitrary = sized mkBdd0 where
+    mkBdd0 sz = mkBdd (sz + 1) sz
+    mkBdd :: Base -> Int -> Gen BDD
+    mkBdd _ n | n <= 0 = oneof [return Bot, return Top]
+    mkBdd i' n = do
+      let i = n - 1
+      frequency
+        [(if i == i' then 0 else 2, do
+            t <- chooseInt (-2, n) >>= mkBdd i
+            e <- chooseInt (-2, n) >>= mkBdd i  -- Can generate bogus exact rhses!
+            return (select i t e)),
+         (1, do
+            m <- arbitrary
+            e <- chooseInt (-2, n-1) >>= mkBdd i
+            return (exact i m e))]
   shrink b | not (rightmost b) =
     complement b : (complement <$> shrink (complement b))
   shrink (bdd -> Select i t e) =
     e:t:(select i t <$> shrink e)++(select i <$> shrink t <*> pure e)
+  shrink (bdd -> Exact i m e) =
+    e:(exact i m <$> shrink e)
   shrink _ = []
 
 -- Test fixture type.
 data TF a b = TF a b
 
-instance (FV a, FV b) => FV (TF a b) where
-  fv (TF a b) = fv a <> fv b
-  rename r (TF a b) = TF (rename r a) (rename r b)
-  showIt (TF a b) = ("(TF\n  r = "++) . shows a . ("\n  a = "++) . shows b . ("\n)"++)
+instance (FV r, FV a) => FV (TF r a) where
+  fv (TF r a) = fv r <> fv a
+  rename rn (TF r a) = TF (rename rn r) (rename rn a)
+  showIt (TF r a) = ("(TF\n  r = "++) . shows r . ("\n  a = "++) . showIt a . ("\n)"++)
 
 instance (Arbitrary a, FV a, Arbitrary b, FV b) => Arbitrary (TF a b) where
   arbitrary = TF <$> arbitrary <*> arbitrary
@@ -69,7 +79,7 @@ instance (FV a, FV b, FV c) => FV (a,b,c) where
   fv (a,b,c) = fv a <> fv b <> fv c
   rename r (a,b,c) = (rename r a, rename r b, rename r c)
   showIt (a,b,c) =
-    showParen True (shows a . ("\n  b = "++) . shows b . ("\n  c = "++) . shows c)
+    shows a . ("\n  b = "++) . shows b . ("\n  c = "++) . shows c
 
 instance FV NBase where
   fv (nn -> b) = S.singleton b
@@ -258,7 +268,7 @@ prop_eraseDisjoints_root _ = property Discard
 
 prop_eraseDisjoints_fv :: TF TR (BaseInc, BDD) -> Property
 prop_eraseDisjoints_fv (TF r (p -> ii, e))
-  | iDisjs `S.disjoint` fve = erased === e
+  -- | iDisjs `S.disjoint` fve = erased === e -- Not true for Eq
   | otherwise = property (fv erased `S.isSubsetOf` (fve `S.difference` iDisjs))
   where iDisjs = S.fromList (filter ((Disjoint==). tr r i) [0..i-1])
         fve = fv e
