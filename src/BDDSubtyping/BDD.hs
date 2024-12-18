@@ -7,77 +7,25 @@ module BDDSubtyping.BDD(
   bddBases, model, modelDiff,
   basicUnion, basicIntersect, basicDifference, complement,
   basicImplies, basicEqv, trToBDD,
-  eraseSubtypes, eraseDisjoints, fullyErase,
+  eraseSubtypes, eraseDisjoints,
   common, commonOrErase,
-  canonTD, canonBU, canonS, canonW,
+  canonS, isCanon,
   isBottom, relate, commute, Relation(..)
 ) where
-import BDDSubtyping.DAG(DAG, Relatedness(..), tr, unMkDag)
 import Control.Monad(liftM2)
-import qualified Data.IntSet as S
 import qualified Data.IntMap.Strict as M
-import qualified Data.Map.Strict as DM
 import Data.IntMap((!))
+import qualified Data.Map.Strict as DM
+import System.IO.Unsafe(unsafePerformIO) -- For memo tables
 
-type Base = Int
-
--- We use right-negative ROBDDs with higher Bases
--- at the top (descending variable order), with
--- supertypes having higher numbers than subtypes
--- (consistent with topological ordering).
-
-data Sense = Not | Pos deriving (Eq, Ord, Show)
-
-data BDD = BDD Sense RNBDD deriving (Eq, Ord)
-
-data RNBDD
-  = None
-  | Eq Base RNBDD
-  | Sel Base {-# UNPACK #-}!BDD RNBDD
-  deriving (Eq, Ord)
-
-instance Show BDD where
-  showsPrec _ Bot = ("Bot"++)
-  showsPrec _ Top = ("Top"++)
-  showsPrec p (BDD Pos b) = showsPrec p b
-  showsPrec _ (BDD Not b) = showParen True (("complement "++) . shows b)
-
-instance Show RNBDD where
-  showsPrec _ None = ("Bot"++)
-  showsPrec _ (Sel i Top None) = showParen True (("base "++) . shows i)
-  showsPrec _ (Eq i e) = showParen True (("exact "++) . shows i . (" True "++) . shows e)
-  showsPrec _ (Sel i t e) =
-    showParen True
-      (("select "++) . shows i . (' ':) . shows t . (' ':) . shows e)
-
-class Show a => FV a where
-  fv :: a -> S.IntSet
-  rename :: M.IntMap Base -> a -> a
-  showIt :: a -> ShowS
-  showIt = shows
-
-instance FV BDD where
-  fv (BDD _ b) = fv b
-  rename r (BDD p b) = BDD p (rename r b)
-
-instance FV RNBDD where
-  fv None = mempty
-  fv (Sel i t e) = S.insert i (fv t <> fv e)
-  fv (Eq i e) = S.insert i (fv e)
-  rename _ None = None
-  rename r (Sel i t e) = sel (r!i) (rename r t) (rename r e)
-  rename r (Eq i e) = Eq (r!i) $ rename r e
+import Data.NaiveMemo(MemoTable, mkMemo, memoize)
+import BDDSubtyping.DAG(DAG, Relatedness(..), tr, unMkDag)
+import BDDSubtyping.BDDInternal
 
 -- Take the complement of a BDD. O(1).
 complement :: BDD -> BDD
 complement (BDD Pos t) = BDD Not t
 complement (BDD Not t) = BDD Pos t
-
-pattern Bot :: BDD
-pattern Bot = BDD Pos None
-
-pattern Top :: BDD
-pattern Top = BDD Not None
 
 data BDDPat r = BotP | Select Base r r | Exact Base Bool r | TopP deriving (Eq, Ord, Show)
 
@@ -113,15 +61,15 @@ fromGraph g = g'!(M.size g - 1) where
 
 -- A pattern matcher for BDDs that abstracts away RNBDD.
 bdd :: BDD -> BDDPat BDD
-bdd (BDD Pos None) = BotP
-bdd (BDD Not None) = TopP
 bdd (BDD Pos (Sel v t e)) = Select v t (BDD Pos e)
 bdd (BDD Not (Sel v (BDD Not t) e)) = Select v (BDD Pos t) (BDD Not e)
 bdd (BDD Not (Sel v (BDD Pos t) e)) = Select v (BDD Not t) (BDD Not e)
 bdd (BDD Pos (Eq v e)) = Exact v True (BDD Pos e)
 bdd (BDD Not (Eq v e)) = Exact v False (BDD Not e)
+bdd (BDD Pos _{-None-}) = BotP
+bdd (BDD Not _{-None-}) = TopP
 
--- Basic sel smart constructor that handles elimination.
+-- Smart constructor that handles elimination.
 sel :: Base -> BDD -> RNBDD -> RNBDD
 sel _ (BDD Pos t) e | t == e = e
 sel i t (Eq i' e) | i == i' = sel i t e
@@ -130,7 +78,7 @@ sel i t e = Sel i t e
 
 -- Fundamental select smart constructor that just deals with BDD / RNBDD conversion.
 select0 :: Base -> BDD -> BDD -> BDD
-select0 i t (BDD Pos e) = BDD Pos (Sel i t e)
+select0 i t (BDD Pos e) = BDD Pos $ Sel i t e
 select0 i (BDD Pos t) (BDD Not e) = BDD Not (Sel i (BDD Not t) e)
 select0 i (BDD Not t) (BDD Not e) = BDD Not (Sel i (BDD Pos t) e)
 
@@ -168,7 +116,6 @@ bddBases r (BDD Pos t) = rnbddBases r t
 bddBases r (BDD Not t) = not . rnbddBases r t
 
 rnbddBases :: TR -> RNBDD -> (Base -> Bool)
-rnbddBases _ None = const False
 rnbddBases r (Eq v e) =
   let eBases = rnbddBases r e
   in \i -> v == i || eBases i
@@ -179,6 +126,7 @@ rnbddBases r (Sel n t e) =
       if n >= i && tr r n i == Subtype
         then tBases i
         else eBases i
+rnbddBases _ _{-None-} = const False
 
 -- By convention, the rightmost leaf of a RNBDD is None/Bot (False).
 -- We read the value of the rightmost leaf of a BDD from its root Sense.
@@ -204,6 +152,10 @@ modelDiff r a b = filter (\i -> ab i /= bb i) [0..(root a `max` root b) + 1]
   where ab = bddBases r a
         bb = bddBases r b
 
+{-# NOINLINE intersectMemoTable #-}
+intersectMemoTable :: MemoTable (BDD, BDD) BDD
+intersectMemoTable = unsafePerformIO $ mkMemo
+
 -- There's one interesting binary operation on BDDs, basic intersect (we
 -- can derive union and difference using complement).  O(mn).
 -- Note that basic intersect is oblivious to type relation, and
@@ -214,22 +166,25 @@ basicIntersect a0 b0 = loop a0 b0 where
   loop Top b = b
   loop _ Bot = Bot
   loop a Top = a
-  loop a@(bdd -> Select va ta ea) b@(bdd -> Select vb tb eb) =
+  loop r@(BDD sa a) (BDD sb b) | a == b = if sa == sb then r else Bot
+  loop a b = loop' (commuteBDD (a,b))
+  loop' = memoize intersectMemoTable loop''
+  loop'' (a@(bdd -> Select va ta ea), b@(bdd -> Select vb tb eb)) =
     case compare va vb of
       GT -> select va (ta `loop` b)  (ea `loop` b)
       EQ -> select va (ta `loop` tb) (ea `loop` eb)
       LT -> select vb (a  `loop` tb) (a  `loop` eb)
-  loop a@(bdd -> Exact va ma ea) b@(bdd -> Exact vb mb eb) =
+  loop'' (a@(bdd -> Exact va ma ea), b@(bdd -> Exact vb mb eb)) =
     case compare va vb of
       GT -> exact' va ma (loop ea b) b
       EQ -> exact va (ma && mb) (loop ea eb)
       LT -> exact' vb mb (loop eb a) a
-  loop a@(bdd -> Select va ta ea) b@(bdd -> Exact vb mb eb) =
+  loop'' (a@(bdd -> Select va ta ea), b@(bdd -> Exact vb mb eb)) =
     case compare va vb of
       GT -> select va (loop ta b) (loop ea b)
       EQ -> select va (loop ta b) (loop ea eb)
       LT -> exact' vb mb (loop a eb) a
-  loop a{- Exact _ _ _ -} b{- Select _ _ _ -} = loop b a
+  loop'' (a{- Exact _ _ _ -}, b{- Select _ _ _ -}) = loop'' (b, a)
   exact' v True e b
     | rightmost b = exact v True e
     | otherwise = e
@@ -258,69 +213,78 @@ trToBDD r =
           b <- [basicUnion (base sup) (complement (foldr basicUnion Bot sb))] -- subtyping
     ]
 
+{-# NOINLINE eraseSubtypesTable #-}
+eraseSubtypesTable :: MemoTable (RNBDD, (Base, TR)) RNBDD
+eraseSubtypesTable = unsafePerformIO mkMemo
+
+{-# NOINLINE eraseDisjointsTable #-}
+eraseDisjointsTable :: MemoTable (RNBDD, (Base, TR)) RNBDD
+eraseDisjointsTable = unsafePerformIO mkMemo
+
 -- Erase all strict subtypes of base i in bdd b to their else branch.
 eraseSubtypes :: TR -> Base -> BDD -> BDD
 eraseSubtypes r i b0 = loop b0 where
-  loop (BDD p e) = BDD p $ loopRN e
-  loopRN (Sel j t e)
-    | j < i && tr r j i == Subtype = loopRN e
-    | otherwise = sel j (loop t) (loopRN e)
-  loopRN (Eq j e)
-    | j <= i && tr r j i == Subtype = loopRN e
-    | otherwise = Eq j (loopRN e)
-  loopRN None = None
+  loop (BDD p None) = BDD p None
+  loop (BDD p e) = BDD p $ loopRN (e, (i, r))
+  loopRN = memoize eraseSubtypesTable loopRN'
+  loopRN' (Sel j t e, p@(i',r'))
+    | j < i' && tr r' j i' == Subtype = loopRN (e,p)
+    | otherwise = sel j (loop t) (loopRN (e,p))
+  loopRN' (Eq j e, p@(i',r'))
+    | j <= i' && tr r' j i' == Subtype = loopRN (e,p)
+    | otherwise = Eq j (loopRN (e,p))
+  loopRN' _{-None-} = None
 
 -- Erase all types disjoint from base i in bdd b to their else branch.
 eraseDisjoints :: TR -> Base -> BDD -> BDD
 eraseDisjoints r i b0 = loop b0 where
-  loop (BDD p e) = BDD p $ loopRN e
-  loopRN (Sel j t e)
-    | j < i && tr r j i == Disjoint = loopRN e
-    | otherwise = sel j (loop t) (loopRN e)
-  loopRN (Eq j e)
-    | j < i && tr r j i /= Subtype = loopRN e
-    | otherwise = Eq j (loopRN e)
-  loopRN None = None
-
--- Recursively erase disjoint types from the then-branch and
--- subtypes from the else-branch all the way down the BDD,
--- working top-down (to minimize node count).  O(n^2).
-fullyErase :: TR -> BDD -> BDD
-fullyErase r (bdd -> Select i t e) =
-  select i
-         (fullyErase r (eraseDisjoints r i t))
-         (fullyErase r (eraseSubtypes  r i e))
-fullyErase _ leaf = leaf
+  loop (BDD p None) = BDD p None
+  loop (BDD p e) = BDD p $ loopRN (e, (i, r))
+  loopRN = memoize eraseDisjointsTable loopRN'
+  loopRN' (Sel j t e, p@(i',r'))
+    | j < i' && tr r' j i' == Disjoint = loopRN (e,p)
+    | otherwise = sel j (loop t) (loopRN (e,p))
+  loopRN' (Eq j e, p@(i',r'))
+    | j <= i' && tr r' j i' /= Subtype = loopRN (e,p)
+    | otherwise = Eq j (loopRN (e,p))
+  loopRN' _{-None-} = None
 
 selectM :: Base -> Maybe BDD -> Maybe BDD -> Maybe BDD
 selectM i = liftM2 (select i)
 
+{-# NOINLINE commonMemoTable #-}
+commonMemoTable :: MemoTable (BDD, BDD, (Base, TR)) (Maybe BDD)
+commonMemoTable = unsafePerformIO mkMemo
+
 common :: TR -> Base -> BDD -> BDD -> Maybe BDD
 common r c t0 e0 = loop t0 e0 where
-  loop t@(bdd -> Select it tt et) e@(bdd -> Select ie te ee) =
+  loop Top Bot = Nothing
+  loop Bot Top = Nothing
+  loop Top Top = Just Top
+  loop Bot Bot = Just Bot -- Bot Bot
+  loop a   b   = loop' (a, b, (c, r))
+  loop' = memoize commonMemoTable loop''
+  loop'' (t@(bdd -> Select it tt et), e@(bdd -> Select ie te ee), _) =
     case compare it ie of
       GT -> thenHigh it tt et e
       EQ -> selectM it (loop tt te) (loop et ee)
       LT -> elseHigh t ie te ee
-  loop (bdd -> Select it tt et) e@(bdd -> Exact ie _ _)
+  loop'' (bdd -> Select it tt et, e@(bdd -> Exact ie _ _), _)
     | it >= ie = thenHigh it tt et e
-  loop t@(bdd -> Exact it _ _) (bdd -> Select ie te ee)
+  loop'' (t@(bdd -> Exact it _ _), bdd -> Select ie te ee, _)
     | ie >= it = elseHigh t ie te ee
-  loop t@(bdd -> Exact it mt et) e@(bdd -> Exact ie me ee) =
+  loop'' (t@(bdd -> Exact it mt et), e@(bdd -> Exact ie me ee), _) =
     case compare it ie of
       GT -> exact it mt <$> loop et e
       -- The EQ case shouldn't happen in properly-erased BDDs.
       EQ | mt /= me -> Nothing
          | otherwise -> exact it mt <$> loop et ee
       LT -> exact ie me <$> loop t ee
-  loop (bdd -> Exact it mt et) e = exact it mt <$> loop et e
-  loop t (bdd -> Exact ie me ee) = exact ie me <$> loop t ee
-  loop (bdd -> Select it tt et) e = thenHigh it tt et e
-  loop t (bdd -> Select ie te ee) = elseHigh t ie te ee
-  loop Top Bot = Nothing
-  loop Bot Top = Nothing
-  loop Top Top = Just Top
-  loop _   _   = Just Bot -- Bot Bot
+  loop'' (bdd -> Exact it mt et, e, _) = exact it mt <$> loop et e
+  loop'' (t, bdd -> Exact ie me ee, _) = exact ie me <$> loop t ee
+  loop'' (bdd -> Select it tt et, e, _) = thenHigh it tt et e
+  loop'' (t, bdd -> Select ie te ee, _) = elseHigh t ie te ee
+  loop'' _ = error "common: unreachable"
   thenHigh it tt et e
     | tr r it c == Subtype = select it tt <$> loop et e
     | otherwise = selectM it (loop tt e) (loop et e)
@@ -328,40 +292,42 @@ common r c t0 e0 = loop t0 e0 where
     | tr r ie c == Disjoint = select ie te <$> loop t ee
     | otherwise = selectM ie (loop t te) (loop t ee)
 
--- shallowCommon :: TR -> BDD -> BDD
--- shallowCommon r (bdd -> Select i t e) =
---   maybe b id $ common r i t e
--- shallowCommon r b = b
+{-# NOINLINE coeMemoTable #-}
+coeMemoTable :: MemoTable (BDD, BDD, (Base, TR)) (BDD, BDD, Maybe BDD)
+coeMemoTable = unsafePerformIO mkMemo
 
 -- Fused common and erase: should equal:
 -- (eraseDisjoints r c t, eraseSubtypes r c e,
 --  common r c (eraseDisjoints r c t) (eraseSubtypes r c e))
 commonOrErase :: TR -> Base -> BDD -> BDD -> (BDD, BDD, Maybe BDD)
 commonOrErase r c t0 e0 = loop t0 e0 where
-  loop t@(bdd -> Select it tt et) e@(bdd -> Select ie te ee) =
+  loop Top Bot = (Top, Bot, Nothing)
+  loop Bot Top = (Bot, Top, Nothing)
+  loop Top Top = (Top, Top, Just Top)
+  loop Bot Bot = (Bot, Bot, Just Bot)
+  loop t e = loop' (t,e,(c,r))
+  loop' = memoize coeMemoTable loop''
+  loop'' (t@(bdd -> Select it tt et), e@(bdd -> Select ie te ee), _) =
     case (compare it ie, tr r it c) of
       (GT, cmp) -> thenHigh cmp it tt et e
       (EQ, cmp) -> same cmp it tt et te ee
       (LT, _) -> elseHigh (tr r ie c) t ie te ee
-  loop (bdd -> Select it tt et) e@(bdd -> Exact ie _ _)
+  loop'' (bdd -> Select it tt et, e@(bdd -> Exact ie _ _), _)
     | it >= ie = thenHigh (tr r it c) it tt et e
-  loop t@(bdd -> Exact it _ _) (bdd -> Select ie te ee)
+  loop'' (t@(bdd -> Exact it _ _), bdd -> Select ie te ee, _)
     | ie >= it = elseHigh (tr r ie c) t ie te ee
-  loop t@(bdd -> Exact it mt et) e@(bdd -> Exact ie me ee) =
+  loop'' (t@(bdd -> Exact it mt et), e@(bdd -> Exact ie me ee), _) =
     case compare it ie of
       GT -> thenExact it mt et e
       EQ | tr r it c == Subtype -> (exact it mt et', ee', exact it mt <$> e')
          | otherwise -> (et', exact ie me ee', exact ie me <$> e')
          where (et', ee', e') = loop et ee
       LT -> elseExact t ie me ee
-  loop (bdd -> Exact it mt et) e = thenExact it mt et e
-  loop t (bdd -> Exact ie me ee) = elseExact t ie me ee
-  loop (bdd -> Select it tt et) e = thenHigh (tr r it c) it tt et e
-  loop t (bdd -> Select ie te ee) = elseHigh (tr r ie c) t ie te ee
-  loop Top Bot = (Top, Bot, Nothing)
-  loop Bot Top = (Bot, Top, Nothing)
-  loop Top Top = (Top, Top, Just Top)
-  loop Bot Bot = (Bot, Bot, Just Bot)
+  loop'' (bdd -> Exact it mt et, e, _) = thenExact it mt et e
+  loop'' (t, bdd -> Exact ie me ee, _) = elseExact t ie me ee
+  loop'' (bdd -> Select it tt et, e, _) = thenHigh (tr r it c) it tt et e
+  loop'' (t, bdd -> Select ie te ee, _) = elseHigh (tr r ie c) t ie te ee
+  loop'' _ = error "commonOrErase: unreachable"
   both i tt et te ee = (select i tt' et', select i te' ee', selectM i t' e')
     where (tt', te', t') = loop tt te
           (et', ee', e') = loop et ee
@@ -393,46 +359,32 @@ commonOrErase r c t0 e0 = loop t0 e0 where
     | otherwise = (et', exact ie me ee', exact ie me <$> e')
     where f@(et', ee', e') = loop t ee
 
-shallowCE :: TR -> BDD -> BDD
-shallowCE r (bdd -> Select i t e) =
-  case commonOrErase r i t e of
-    (t', e', Nothing) -> select i t' e'
-    (_, _, Just s) -> s
-shallowCE _ b = b
-
-canonTD :: TR -> BDD -> BDD
-canonTD r (bdd -> Select i t e) =
-  case commonOrErase r i t e of
-    (t', e', Nothing) -> select i (canonTD r t') (canonTD r e')
-    (_, _, Just s) -> canonTD r s
-canonTD _ b = b
-
-canonBU :: TR -> BDD -> BDD
-canonBU r (bdd -> Select i t e) =
-  let t' = canonBU r t
-      e' = canonBU r e
-  in if t' == e' then t' else shallowCE r (select0 i t' e')
-canonBU _ b = b
+{-# NOINLINE canonSTable #-}
+canonSTable :: MemoTable (BDD, TR) BDD
+canonSTable = unsafePerformIO mkMemo
 
 canonS :: TR -> BDD -> BDD
-canonS r (bdd -> Select i t e) =
-  let t' = canonS r t
-      e' = canonS r e
-  in case (t' == e', commonOrErase r i t e) of
-    (True, _) -> t'
-    (_, (_, _, Just s)) -> canonS r s
-    (_, (t'', e'', Nothing)) -> select0 i t'' e''
-canonS _ b = b
+canonS r b0 = loop b0 where
+  loop Top = Top
+  loop Bot = Bot
+  loop b = loop' (b, r)
+  loop' = memoize canonSTable loop''
+  loop'' (bdd -> Select i t e, _) = loopS i t e
+  loop'' (bdd -> Exact i m e, _) = exact i m $ loop e
+  loop'' _ = error "canonS: unreachable"
+  loopS i t e = loopS' i (loop t) (loop e)
+  loopS' _ t e | t == e = t
+  loopS' i t e =
+    case commonOrErase r i t e of
+      (t', e', Nothing)
+        | t' == t && e' == e -> select i t' e'
+        | t' == t -> loopS' i t' (loop e')
+        | e' == e -> loopS' i (loop t') e'
+        | otherwise -> loopS i t' e'
+      (_, _, Just s) -> loop s
 
-canonW :: TR -> BDD -> BDD
-canonW r (bdd -> Select i t e) =
-  let t' = canonW r t
-      e' = canonW r e
-  in case (t' == e', commonOrErase r i t e) of
-    (True, _) -> t'
-    (_, (_, _, Just s)) -> fullyErase r s
-    (_, (t'', e'', Nothing)) -> select0 i t'' e''
-canonW _ b = b
+isCanon :: TR -> BDD -> Bool
+isCanon r b = canonS r b == b
 
 size :: BDD -> Int
 size b = sizeb b where

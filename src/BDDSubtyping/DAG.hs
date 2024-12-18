@@ -1,3 +1,5 @@
+{-# OPTIONS_GHC -fno-warn-orphans #-}
+{-# LANGUAGE TypeFamilies #-}
 module BDDSubtyping.DAG(
   DAG, Node,
   tr, Relatedness(..),
@@ -8,33 +10,38 @@ import qualified Data.IntMap.Strict as M
 import Data.IntSet(IntSet)
 import qualified Data.IntSet as S
 import Data.Foldable
+import Data.NaiveMemo
+import System.IO.Unsafe(unsafePerformIO)
 
 type Node = Int
 
-newtype DAG = DAG (IntMap IntSet)
-  deriving (Eq)
+type DAG = HashConsed (IntMap IntSet)
 
 instance Show DAG where
   showsPrec _ d = ("mkDag " ++) . shows (tt d)
 
+{-# NOINLINE dagCons #-}
+dagCons :: ConsTable DAG
+dagCons = unsafePerformIO mkCons
+
 mkDag :: [(Node, [Node])] -> DAG
 mkDag ns =
-  DAG $ tc (M.fromList [(i, S.fromList es) | (i, es) <- ns, not (null es)])
+  hashConsed dagCons $ tc (M.fromList [(i, S.fromList es) | (i, es) <- ns, not (null es)])
 
 unMkDag :: DAG -> [(Node, [Node])]
-unMkDag (DAG d) = [(n, S.toList es) | (n, es) <- M.toList d]
+unMkDag d = [(n, S.toList es) | (n, es) <- M.toList (underlying d)]
 
 -- Given a DAG, return a list of invalid edges.  This should be empty.
 invalidEdges :: DAG -> [(Node, Node)]
-invalidEdges (DAG d) =
-  [(a,b) | (a,bs) <- M.toList d, b <- S.toList bs, a < b]
+invalidEdges d =
+  [(a,b) | (a,bs) <- M.toList (underlying d), b <- S.toList bs, a < b]
 
 -- Transitive trim.  Reduces DAG to minimal dependencies and unmakes it.
 tt :: DAG -> [(Node, [Node])]
-tt (DAG d) =
+tt d =
   [(v, S.toList (as `S.difference` ts)) |
-    (v, as) <- M.toList d,
-    let ts = foldMap (\a -> M.findWithDefault mempty a d) (S.toList as)]
+    (v, as) <- M.toList (underlying d),
+    let ts = foldMap (\a -> M.findWithDefault mempty a (underlying d)) (S.toList as)]
 
 -- Transitive closure.  Assumes topologically sorted node numbering.
 tc :: IntMap IntSet -> IntMap IntSet
@@ -50,16 +57,16 @@ data Relatedness = Subtype | Disjoint | MayIntersect
 tr :: DAG -> Node -> Node -> Relatedness
 tr d a b | a > b = tr d b a
 tr _ a b | a == b = Subtype
-tr (DAG d) a b =
-  case (d!?a, d!?b) of
+tr d a b =
+  case (underlying d!?a, underlying d!?b) of
     (_, Just bSubs) | S.member a bSubs -> Subtype
     (Just aSubs, Just bSubs) | not (S.disjoint aSubs bSubs) -> MayIntersect
     _ -> Disjoint
 
 -- Subtypes
 subs :: DAG -> Node -> IntSet
-subs (DAG d) a = M.findWithDefault mempty a d
+subs d a = M.findWithDefault mempty a (underlying d)
 
 -- Maximum value in DAG, or (-1) if none.
 dagMax :: DAG -> Node
-dagMax (DAG d) = maybe (-1) fst $ M.lookupMax d
+dagMax d = maybe (-1) fst $ M.lookupMax $ underlying d

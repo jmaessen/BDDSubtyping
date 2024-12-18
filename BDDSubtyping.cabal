@@ -55,17 +55,19 @@ common warnings
     ghc-options: -Wall -O2
     build-depends:
         base ^>=4.16.4.0,
-        containers
+        containers,
+        unordered-containers,
+        hashable
 
 library
     -- Import common warning flags.
     import:           warnings
 
     -- Modules exported by the library.
-    exposed-modules:  BDDSubtyping.DAG BDDSubtyping.BDD
+    exposed-modules:  BDDSubtyping.DAG BDDSubtyping.BDD Data.DescSet Data.NaiveMemo
 
     -- Modules included in this library but not exported.
-    -- other-modules:
+    other-modules:  BDDSubtyping.BDDInternal
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:

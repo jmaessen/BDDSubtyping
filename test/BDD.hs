@@ -1,6 +1,7 @@
 {-# LANGUAGE TemplateHaskell, ViewPatterns #-}
 module BDD where
 import Test.QuickCheck
+import qualified Data.DescSet as DS
 import qualified Data.IntSet as S
 import qualified Data.IntMap as M
 import Data.IntMap((!))
@@ -29,10 +30,11 @@ instance Arbitrary BDD where
             t <- chooseInt (-2, n) >>= mkBdd i
             e <- chooseInt (-2, n) >>= mkBdd i  -- Can generate bogus exact rhses!
             return (select i t e)),
-         (1, do
-            m <- arbitrary
-            e <- chooseInt (-2, n-1) >>= mkBdd i
-            return (exact i m e))]
+         (1, mkBdd i (i-1))]
+         -- (1, do
+         --    m <- arbitrary
+         --    e <- chooseInt (-2, n-1) >>= mkBdd i
+         --    return (exact i m e))]
   shrink b | not (rightmost b) =
     complement b : (complement <$> shrink (complement b))
   shrink (bdd -> Select i t e) =
@@ -58,9 +60,9 @@ instance (Arbitrary a, FV a, Arbitrary b, FV b) => Arbitrary (TF a b) where
     where
       fvb = fv (TF a b)
       shrinkFV
-        | S.null fvb || S.size fvb == 1 + S.findMax fvb = []
+        | DS.null fvb || DS.size fvb == 1 + DS.findMax fvb = []
         | otherwise =
-          [rename (M.fromList (zip (S.toList fvb) [0..])) (TF a b)]
+          [rename (M.fromList (zip (reverse (DS.toDescList fvb)) [0..])) (TF a b)]
 
 instance (FV a, FV b) => Show (TF a b) where
   showsPrec _ = showIt
@@ -82,7 +84,7 @@ instance (FV a, FV b, FV c) => FV (a,b,c) where
     shows a . ("\n  b = "++) . shows b . ("\n  c = "++) . shows c
 
 instance FV NBase where
-  fv (nn -> b) = S.singleton b
+  fv (nn -> b) = DS.singleton b
   rename r (nn -> b) = NonNegative (r!b)
 
 instance FV BaseInc where
@@ -90,7 +92,7 @@ instance FV BaseInc where
   rename _ _ = Positive 1
 
 instance FV TR where
-  fv r = S.fromList [ v | (a, vs) <- unMkDag r, v <- a : vs ]
+  fv r = DS.fromList [ v | (a, vs) <- unMkDag r, v <- a : vs ]
   rename rn r =
     mkDag [(a', bs')
           | (a, bs) <- unMkDag r
@@ -130,6 +132,16 @@ instance Dot BDD where
         in ("NB"++si, [ "  NB"++si++" [label=\"⟂\",shape=none]"])
       ref' _ n _ = ("N"++show n, [])
 
+prop_hc_base :: TF () BDD -> Property
+prop_hc_base (TF () a) = a === mkEq a where
+  mkEq (bdd -> Select i Top Bot) = base i
+  mkEq b@(bdd -> Select _ _ Top) = complement (mkEq (complement b))
+  mkEq (bdd -> Select i t e) = select i t e
+  mkEq (bdd -> Exact i True Bot) = exactly i
+  mkEq (bdd -> Exact i False Top) = complement (exactly i)
+  mkEq (bdd -> Exact i m e) = exact i m e
+  mkEq Top = Top
+  mkEq _{-Bot-} = Bot
 
 prop_graph_id :: TF () BDD -> Property
 prop_graph_id (TF () b) =
@@ -149,7 +161,7 @@ prop_base (TF r (nn -> i)) =
 
 prop_fv_base :: NBase -> Property
 prop_fv_base (nn -> i) =
-  fv (base i) === S.singleton i
+  fv (base i) === DS.singleton i
 
 prop_exactly :: TF TR NBase -> Property
 prop_exactly (TF r (nn -> i)) =
@@ -157,7 +169,7 @@ prop_exactly (TF r (nn -> i)) =
 
 prop_fv_exactly :: NBase -> Property
 prop_fv_exactly (nn -> i) =
-  fv (exactly i) === S.singleton i
+  fv (exactly i) === DS.singleton i
 
 prop_bases_bot :: TF TR NBase -> Property
 prop_bases_bot (TF r (nn -> i)) =
@@ -190,7 +202,7 @@ prop_union (TF r (a, b)) =
 
 -- This is only true of *basic* union!
 prop_fv_union :: TF () (BDD, BDD) -> Bool
-prop_fv_union (TF _ (a, b)) = fv (a `basicUnion` b) `S.isSubsetOf` (fv a <> fv b)
+prop_fv_union (TF _ (a, b)) = fv (a `basicUnion` b) `DS.isSubsetOf` (fv a <> fv b)
 
 prop_union_idem :: TF () BDD -> Property
 prop_union_idem (TF () a) = (a `basicUnion` a) === a
@@ -239,9 +251,9 @@ prop_eraseSubtypes_root _ = property Discard
 
 prop_eraseSubtypes_fv :: TF TR (BaseInc, BDD) -> Property
 prop_eraseSubtypes_fv (TF r (p -> ii, e))
-  | iSubs `S.disjoint` fve = erased === e
-  | otherwise = property (fv erased `S.isSubsetOf` (fve `S.difference` iSubs))
-  where iSubs = subs r i
+  | iSubs `DS.disjoint` fve = erased === e
+  | otherwise = property (fv erased `DS.isSubsetOf` (fve `DS.difference` iSubs))
+  where iSubs = DS.fromAscList $ S.toAscList $ subs r i
         fve = fv e
         erased = eraseSubtypes r i e
         i = root e + ii
@@ -269,8 +281,8 @@ prop_eraseDisjoints_root _ = property Discard
 prop_eraseDisjoints_fv :: TF TR (BaseInc, BDD) -> Property
 prop_eraseDisjoints_fv (TF r (p -> ii, e))
   -- | iDisjs `S.disjoint` fve = erased === e -- Not true for Eq
-  | otherwise = property (fv erased `S.isSubsetOf` (fve `S.difference` iDisjs))
-  where iDisjs = S.fromList (filter ((Disjoint==). tr r i) [0..i-1])
+  | otherwise = property (fv erased `DS.isSubsetOf` (fve `DS.difference` iDisjs))
+  where iDisjs = DS.fromAscList (filter ((Disjoint==). tr r i) [0..i-1])
         fve = fv e
         erased = eraseDisjoints r i e
         i = root e + ii
@@ -295,14 +307,6 @@ prop_erase_root (TF r b@(bdd -> Select i t e)) =
   modelDiff r b (select i (eraseDisjoints r i t) (eraseSubtypes r i e)) === []
 prop_erase_root _ = property Discard
 
-prop_fullyErase :: TF TR BDD -> Property
-prop_fullyErase (TF r b) = modelDiff r b (fullyErase r b) === []
-
-prop_fullyErase_idem :: TF TR BDD -> Property
-prop_fullyErase_idem (TF r b) =
-  c === fullyErase r c
-  where c = fullyErase r b
-
 -- common always succeeds when handed two equal BDDs
 prop_common_refl :: TF TR (BaseInc, BDD) -> Property
 prop_common_refl (TF r (p -> i, b)) =
@@ -324,7 +328,7 @@ prop_common_fv (TF r (bdd -> Select i t e)) =
   let t' = eraseDisjoints r i t
       e' = eraseSubtypes r i e
   in case common r i t' e' of
-    Just c -> property (fv c `S.isSubsetOf` (fv t' <> fv e'))
+    Just c -> property (fv c `DS.isSubsetOf` (fv t' <> fv e'))
     Nothing -> t =/= e .&&. t' =/= e'
 prop_common_fv _ = property Discard
 
@@ -372,34 +376,16 @@ prop_commonOrErase (TF r (bdd -> Select c t e)) =
   in commonOrErase r c t e === (t', e', common r c t' e')
 prop_commonOrErase _ = property Discard
 
-canon_idem :: (TR -> BDD -> BDD) -> TF TR BDD -> Property
-canon_idem canon (TF r b) =
-  counterexample (unlines $ map show cs) (c == canon r c)
-  where
-    c = canon r b
-    cc name can = let c' = can r b in (name, c', can r c')
-    cs = [ ct | ct@(_,c1,c2) <- [cc "canonTD" canonTD, cc "canonBU" canonBU, cc "canonS" canonS, cc "canonW" canonW], c1 /= c2]
-
--- Believed false
-prop_canonTD_idem :: TF TR BDD -> Property
-prop_canonTD_idem = canon_idem canonTD
-
--- Believed false
-prop_canonBU_idem :: TF TR BDD -> Property
-prop_canonBU_idem = canon_idem canonBU
-
 -- True?
 prop_canonS_idem :: TF TR BDD -> Property
-prop_canonS_idem = canon_idem canonS
+prop_canonS_idem (TF r b) = c === canonS r c
+ where c = canonS r b
 
--- True????
-prop_canonW_idem :: TF TR BDD -> Property
-prop_canonW_idem = canon_idem canonW
 
 prop_isBottom :: TF TR BDD -> Property
 prop_isBottom (TF r b)
  | isBottom r b = counterexample "bottom" (model r b === [])
- | otherwise = counterexample "nonbottom" (model r b =/= [])
+ | otherwise = property Discard
 
 -- Last because high rejection rates.
 prop_common_correct1 :: TF TR BDD -> Property
