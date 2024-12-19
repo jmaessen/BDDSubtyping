@@ -376,16 +376,100 @@ prop_commonOrErase (TF r (bdd -> Select c t e)) =
   in commonOrErase r c t e === (t', e', common r c t' e')
 prop_commonOrErase _ = property Discard
 
--- True?
 prop_canonS_idem :: TF TR BDD -> Property
 prop_canonS_idem (TF r b) = c === canonS r c
- where c = canonS r b
+  where c = canonS r b
 
+prop_canonS_complement :: TF TR BDD -> Property
+prop_canonS_complement (TF r b) =
+  canonS r (complement b) === complement (canonS r b)
+
+prop_canonS_base :: TF TR NBase -> Property
+prop_canonS_base (TF r (nn -> b)) =
+  canonS r (base b) === base b
+
+prop_canonS_bot :: TF TR () -> Property
+prop_canonS_bot (TF r _) =
+  canonS r Bot === Bot
+
+prop_canonS_top :: TF TR () -> Property
+prop_canonS_top (TF r _) =
+  canonS r Top === Top
 
 prop_isBottom :: TF TR BDD -> Property
 prop_isBottom (TF r b)
  | isBottom r b = counterexample "bottom" (model r b === [])
+ | model r b /= [] = counterexample "nonempty" (not (isBottom r b))
  | otherwise = property Discard
+
+prop_relateNaiveBase :: TF TR (NBase, NBase) -> Property
+prop_relateNaiveBase (TF r (nn -> a, nn -> b)) =
+  let rel = relateNaive r (base a) (base b)
+      rel' = tr r a b
+  in counterexample (show rel')
+       (rel ===
+         case rel' of
+           Subtype -> Relation (a <= b) (b <= a) False False
+           MayIntersect -> Relation False False False False
+           Disjoint -> Relation False False True False)
+
+prop_relateNaiveBot :: TF TR BDD -> Property
+prop_relateNaiveBot (TF r b) =
+  let rel = relateNaive r Bot b
+      bot = isBottom r b
+      top = isBottom r (complement b)
+  in rel === Relation True bot True top
+
+prop_relateNaiveTop :: TF TR BDD -> Property
+prop_relateNaiveTop (TF r b) =
+  let rel = relateNaive r Top b
+      bot = isBottom r b
+      top = isBottom r (complement b)
+  in rel === Relation top True bot True
+
+prop_relateNaive_sub :: TF TR (BDD, BDD) -> Property
+prop_relateNaive_sub (TF r (a,b))
+  | isSubtype rel && isSupertype rel =
+    counterexample "equiv" (modelDiff r a b === [])
+  | isSubtype rel =
+    counterexample "subtype" (modelDiff r a i === [])
+  | isSupertype rel =
+    counterexample "supertype" (modelDiff r b i === [])
+  | otherwise = property Discard
+  where rel = relateNaive r a b
+        i = basicIntersect a b
+
+prop_relateNaive_subc :: TF TR (BDD, BDD) -> Property
+prop_relateNaive_subc (TF r (a,b))
+  | isSubtypeComp rel && isSupertypeComp rel =
+    counterexample "equiv" (modelDiff r a b' === [])
+  | isSubtypeComp rel =
+    counterexample "subtype" (modelDiff r a i === [])
+  | isSupertypeComp rel =
+    counterexample "supertype" (modelDiff r b' i === [])
+  | otherwise = property Discard
+  where rel = relateNaive r a b
+        b' = complement b
+        i = basicIntersect a b'
+
+prop_relateNaive_disj :: TF TR (BDD, BDD) -> Property
+prop_relateNaive_disj (TF r (a,b))
+  | isDisjoint rel = model r (basicIntersect a b) === []
+  | isDisjoint (rightComplement rel) = model r (basicIntersect a (complement b)) === []
+  | otherwise = property Discard
+  where rel = relateNaive r a b
+
+prop_relateNaive_comm :: TF TR (BDD, BDD) -> Property
+prop_relateNaive_comm (TF r (a,b)) =
+  relateNaive r a b === commute (relateNaive r b a)
+
+prop_relateNaive_rcomp :: TF TR (BDD, BDD) -> Property
+prop_relateNaive_rcomp (TF r (a,b)) =
+  relateNaive r a (complement b) === rightComplement (relateNaive r a b)
+
+prop_relateNaive_lcomp :: TF TR (BDD, BDD) -> Property
+prop_relateNaive_lcomp (TF r (a,b)) =
+  relateNaive r (complement a) b === leftComplement (relateNaive r a b)
 
 -- Last because high rejection rates.
 prop_common_correct1 :: TF TR BDD -> Property

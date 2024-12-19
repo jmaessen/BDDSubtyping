@@ -10,7 +10,8 @@ module BDDSubtyping.BDD(
   eraseSubtypes, eraseDisjoints,
   common, commonOrErase,
   canonS, isCanon,
-  isBottom, relate, commute, Relation(..)
+  isBottom, relate, relateNaive, isDisjoint,
+  commute, rightComplement, leftComplement, Relation(..),
 ) where
 import Control.Monad(liftM2)
 import qualified Data.IntMap.Strict as M
@@ -18,7 +19,7 @@ import Data.IntMap((!))
 import qualified Data.Map.Strict as DM
 import System.IO.Unsafe(unsafePerformIO) -- For memo tables
 
-import Data.NaiveMemo(MemoTable, mkMemo, memoize)
+import Data.NaiveMemo(MemoTable, mkMemo, memoize, memoizeIdem1)
 import BDDSubtyping.DAG(DAG, Relatedness(..), tr, unMkDag)
 import BDDSubtyping.BDDInternal
 
@@ -226,7 +227,7 @@ eraseSubtypes :: TR -> Base -> BDD -> BDD
 eraseSubtypes r i b0 = loop b0 where
   loop (BDD p None) = BDD p None
   loop (BDD p e) = BDD p $ loopRN (e, (i, r))
-  loopRN = memoize eraseSubtypesTable loopRN'
+  loopRN = memoizeIdem1 eraseSubtypesTable loopRN'
   loopRN' (Sel j t e, p@(i',r'))
     | j < i' && tr r' j i' == Subtype = loopRN (e,p)
     | otherwise = sel j (loop t) (loopRN (e,p))
@@ -240,7 +241,7 @@ eraseDisjoints :: TR -> Base -> BDD -> BDD
 eraseDisjoints r i b0 = loop b0 where
   loop (BDD p None) = BDD p None
   loop (BDD p e) = BDD p $ loopRN (e, (i, r))
-  loopRN = memoize eraseDisjointsTable loopRN'
+  loopRN = memoizeIdem1 eraseDisjointsTable loopRN'
   loopRN' (Sel j t e, p@(i',r'))
     | j < i' && tr r' j i' == Disjoint = loopRN (e,p)
     | otherwise = sel j (loop t) (loopRN (e,p))
@@ -368,7 +369,7 @@ canonS r b0 = loop b0 where
   loop Top = Top
   loop Bot = Bot
   loop b = loop' (b, r)
-  loop' = memoize canonSTable loop''
+  loop' = memoizeIdem1 canonSTable loop''
   loop'' (bdd -> Select i t e, _) = loopS i t e
   loop'' (bdd -> Exact i m e, _) = exact i m $ loop e
   loop'' _ = error "canonS: unreachable"
@@ -392,15 +393,27 @@ size b = sizeb b where
   sizernb (Sel _ t e) = 1 + sizeb t + sizernb e
   sizernb _ = 0
 
-data Relation = Relation { isSubtype :: Bool, isSupertype :: Bool, isDisjoint :: Bool }
+data Relation =
+  Relation { isSubtype :: Bool, isSupertype :: Bool,
+             isSubtypeComp :: Bool, isSupertypeComp :: Bool }
   deriving (Eq, Show)
 
 instance Semigroup Relation where
-  Relation sub1 sup1 dis1 <> Relation sub2 sup2 dis2 =
-    Relation (sub1 && sub2) (sup1 && sup2) (dis1 && dis2)
+  Relation sub1 sup1 subc1 supc1 <> Relation sub2 sup2 subc2 supc2 =
+    Relation (sub1 && sub2) (sup1 && sup2) (subc1 && subc2) (supc1 && supc2)
 
 commute :: Relation -> Relation
-commute (Relation sub sup dis) = Relation sup sub dis
+commute (Relation sub sup subc supc) = Relation sup sub subc supc
+
+rightComplement :: Relation -> Relation
+rightComplement (Relation sub sup subc supc) = Relation subc supc sub sup
+
+leftComplement :: Relation -> Relation
+leftComplement (Relation sub sup subc supc) = Relation supc subc sup sub
+
+isDisjoint :: Relation -> Bool
+isDisjoint (Relation False False subc _) = subc
+isDisjoint _ = False
 
 -- Does a type denote bottom with respect to the given type relation?
 isBottom :: TR -> BDD -> Bool
@@ -409,6 +422,22 @@ isBottom r b0 = loop b0 where
     loop (eraseDisjoints r i t) && loop (eraseSubtypes r i (BDD Pos e))
   loop (BDD Not _) = False
   loop _ {- Bot -} = True
+
+-- Relate two types naively with respect to base type relation.
+-- a is disjoint from b if their intersection is empty (Bot).
+-- a is a subtype of b if their intersection is a, and vice versa.
+relateNaive :: TR -> BDD -> BDD -> Relation
+relateNaive r a0 b0 = Relation
+  { isSubtype = a == c
+  , isSupertype = b == c
+  , isSubtypeComp = a == d
+  , isSupertypeComp = b' == d
+  }
+  where a = canonS r a0
+        b = canonS r b0
+        b' = complement b
+        c = canonS r $ basicIntersect a b
+        d = canonS r $ basicIntersect a b'
 
 -- Relate two types with respect to base type relation.
 -- a is disjoint from b if their intersection is empty (Bot).

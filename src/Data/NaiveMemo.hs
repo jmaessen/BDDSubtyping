@@ -49,20 +49,28 @@ memoize (MT table) f = go where
           Nothing -> (HM.insert k r t, r)
             where r = f a
 
--- Like memoize, but also records that
+-- Like memoize, but also records that the result when passed in
+-- as the first element of the pair yields itself.
 memoizeIdem1 ::
   (MemoKey a, MemoKey b, Hashable (MK a), Hashable (MK b)) =>
   MemoTable (a,b) a -> ((a,b) -> a) -> ((a,b) -> a)
 memoizeIdem1 (MT table) f = go where
   go ab@(~(_, b)) = do
     let k = toMemoKey ab
-    unsafeDupablePerformIO $
-      modifyMVar table $ \t ->
-        pure $
-        case HM.lookup k t of
-          Just r -> (t, r)
-          Nothing -> (HM.insert (toMemoKey (r, b)) r $ HM.insert k r $ t, r)
-            where r = f ab
+    unsafeDupablePerformIO $ do
+      r <-
+        modifyMVar table $ \t ->
+          pure $
+          case HM.lookup k t of
+            Just r -> (t, r)
+            Nothing -> (HM.insert k r t, r)
+              where r = f ab
+      -- To avoid deadlock when forcing r (which is still a thunk),
+      -- we must drop the MVar and re-take it.
+      let k' = toMemoKey (r, b)
+      if k /= k' then
+        modifyMVar table $ \t -> pure (HM.insert k' r t, r)
+      else pure r
 
 type ConsId = Int
 
