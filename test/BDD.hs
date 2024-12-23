@@ -30,12 +30,12 @@ instance Arbitrary BDD where
             t <- chooseInt (-2, n) >>= mkBdd i
             e <- chooseInt (-2, n) >>= mkBdd i  -- Can generate bogus exact rhses!
             return (select i t e)),
-         (1, mkBdd i (i-1))]
-         -- (1, do
-         --    m <- arbitrary
-         --    e <- chooseInt (-2, n-1) >>= mkBdd i
-         --    return (exact i m e))]
-  shrink b | not (rightmost b) =
+         (1, mkBdd i (i-1)),
+         (1, do
+            m <- arbitrary
+            e <- chooseInt (-2, n-1) >>= mkBdd i
+            return (exact i m e))]
+  shrink b | rightmost b =
     complement b : (complement <$> shrink (complement b))
   shrink (bdd -> Select i t e) =
     e:t:(select i t <$> shrink e)++(select i <$> shrink t <*> pure e)
@@ -361,6 +361,17 @@ prop_common_complement (TF r (bdd -> Select c t e)) =
     Nothing -> property Discard
 prop_common_complement _ = property Discard
 
+prop_commonOrErase_refl_counter :: Property
+prop_commonOrErase_refl_counter = prop_commonOrErase_refl (TF r (a,b)) where
+  r = mkDag [(2,[1])]
+  a = Positive {getPositive = 1}
+  b = select 1 (exact 1 True Bot) (exact 0 True Bot)
+
+prop_commonOrErase_counter :: Property
+prop_commonOrErase_counter = prop_commonOrErase (TF r a) where
+  r = mkDag [(3,[0,1])]
+  a = select 3 (exact 0 True Bot) (select 2 (exact 2 True Bot) (base 1))
+
 prop_commonOrErase_refl :: TF TR (BaseInc, BDD) -> Property
 prop_commonOrErase_refl (TF r (p -> i, b)) =
   let c = root b + i
@@ -470,6 +481,21 @@ prop_relateNaive_rcomp (TF r (a,b)) =
 prop_relateNaive_lcomp :: TF TR (BDD, BDD) -> Property
 prop_relateNaive_lcomp (TF r (a,b)) =
   relateNaive r (complement a) b === leftComplement (relateNaive r a b)
+
+-- Test join
+prop_relateNaive_semigroup :: TF TR ((BaseInc, BDD, BDD), BDD) -> Property
+prop_relateNaive_semigroup (TF r ((p -> i, a, b), c)) =
+  let v = (root a `max` root b `max` root c) + i
+      at = eraseDisjoints r v a
+      ct = eraseDisjoints r v c
+      be = eraseSubtypes r v b
+      ce = eraseSubtypes r v c
+  in relateNaive r (select v a b) c ===
+       (relateNaive r at ct <> relateNaive r be ce)
+
+prop_relateNaive_relate :: TF TR (BDD, BDD) -> Property
+prop_relateNaive_relate (TF r (a,b)) =
+  relateNaive r a b === relate r a b
 
 -- Last because high rejection rates.
 prop_common_correct1 :: TF TR BDD -> Property

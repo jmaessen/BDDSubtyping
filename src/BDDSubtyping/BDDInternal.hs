@@ -7,7 +7,7 @@ module BDDSubtyping.BDDInternal(
   commuteBDD -- but not MemoKey.
 ) where
 import Data.Hashable(Hashable(hashWithSalt))
-import qualified Data.DescSet as DS
+import qualified Data.DescSet as S
 import Data.IntMap((!))
 import qualified Data.IntMap.Strict as M
 import System.IO.Unsafe(unsafePerformIO)
@@ -87,6 +87,7 @@ instance Show BDD where
 
 instance Show RNBDD where
   showsPrec _ (Sel i Top None) = showParen True (("base "++) . shows i)
+  showsPrec _ (Eq i None) = showParen True (("exactly "++) . shows i)
   showsPrec _ (Eq i e) = showParen True (("exact "++) . shows i . (" True "++) . shows e)
   showsPrec _ (Sel i t e) =
     showParen True
@@ -117,7 +118,7 @@ pattern Top <- BDD Not None where
   Top = BDD Not none
 
 class Show a => FV a where
-  fv :: a -> DS.Set Base
+  fv :: a -> S.Set Base
   rename :: M.IntMap Base -> a -> a
   showIt :: a -> ShowS
   showIt = shows
@@ -127,8 +128,11 @@ instance FV BDD where
   rename r (BDD p b) = BDD p (rename r b)
 
 instance FV RNBDD where
-  fv (Sel i t e) = DS.insertLarger i (fv t <> fv e)
-  fv (Eq i e) = DS.insertLarger i (fv e)
+  fv (Sel i t e)
+    | S.getMax r == Just i = r
+    | otherwise = S.insertLarger i r
+    where r = fv t <> fv e
+  fv (Eq i e) = S.insertLarger i (fv e)
   fv _{-None-} = mempty
   rename r (Sel i t e) = Sel (r!i) (rename r t) (rename r e)
   rename r (Eq i e) = Eq (r!i) $ rename r e

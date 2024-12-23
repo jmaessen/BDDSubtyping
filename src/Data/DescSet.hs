@@ -1,6 +1,6 @@
 module Data.DescSet(
   Set, singleton, insertLarger, difference, intersection, toDescList, fromDescList,
-  fromAscList, fromList, findMax,
+  fromAscList, fromList, findMax, getMax,
   null, size, isSubsetOf, disjoint
 ) where
 import Prelude hiding (null)
@@ -8,7 +8,7 @@ import qualified Prelude as P
 import Data.Hashable(Hashable)
 import Data.List(sort, group)
 import Data.List.NonEmpty(NonEmpty(..))
-import Data.Semigroup
+import Data.Semigroup(Semigroup(..))
 
 newtype Set a = S { toDescList :: [a] } deriving (Eq, Ord, Hashable)
 
@@ -72,6 +72,10 @@ intersection (S as0) (S bs0) = S $ loop as0 bs0 where
 
 findMax :: Set a -> a
 findMax = head . toDescList
+
+getMax :: Set a -> Maybe a
+getMax (S []) = Nothing
+getMax (S (m:_)) = Just m
 
 fromAscList :: Ord a => [a] -> Set a
 fromAscList = fromDescList . reverse

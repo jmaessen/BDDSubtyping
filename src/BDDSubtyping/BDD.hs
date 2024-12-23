@@ -12,6 +12,7 @@ module BDDSubtyping.BDD(
   canonS, isCanon,
   isBottom, relate, relateNaive, isDisjoint,
   commute, rightComplement, leftComplement, Relation(..),
+  sel, mergeEq, Sense(..) -- For Debug
 ) where
 import Control.Monad(liftM2)
 import qualified Data.IntMap.Strict as M
@@ -19,9 +20,11 @@ import Data.IntMap((!))
 import qualified Data.Map.Strict as DM
 import System.IO.Unsafe(unsafePerformIO) -- For memo tables
 
-import Data.NaiveMemo(MemoTable, mkMemo, memoize, memoizeIdem1)
+import Data.NaiveMemo(ConsId, getId, MemoTable, mkMemo, memoize, memoizeIdem1)
 import BDDSubtyping.DAG(DAG, Relatedness(..), tr, unMkDag)
 import BDDSubtyping.BDDInternal
+
+import Debug.Trace(trace, traceShow)
 
 -- Take the complement of a BDD. O(1).
 complement :: BDD -> BDD
@@ -74,8 +77,33 @@ bdd (BDD Not _{-None-}) = TopP
 sel :: Base -> BDD -> RNBDD -> RNBDD
 sel _ (BDD Pos t) e | t == e = e
 sel i t (Eq i' e) | i == i' = sel i t e
-sel i (BDD Pos (Eq i' t)) e | i == i' && t == e = Eq i' e
+sel _ (BDD Pos t0@(Eq _ et0)) e0
+  | allEq et0, Just r <- mergeEq Pos t0 e0 = r
+  where
+    allEq None = True
+    allEq (Eq _ e) = allEq e
+    allEq _ = False
 sel i t e = Sel i t e
+
+mergeEq :: Sense -> RNBDD -> RNBDD -> Maybe RNBDD
+mergeEq _   None e = Just e
+mergeEq Pos t None = Just t
+mergeEq Not _ None = Just None
+mergeEq pn  t@(Eq it et) (Sel ie te ee)
+  | it < ie = sel ie <$> mergeEq' pn t te <*> mergeEq pn t ee
+  | it == ie = sel ie <$> mergeEq' pn t te <*> mergeEq pn et ee
+mergeEq pn  t@(Eq it _) (Eq ie ee)
+  | it < ie = Eq ie <$> mergeEq pn t ee
+mergeEq Pos (Eq it et) (Eq ie ee)
+  | it == ie = Eq ie <$> mergeEq Pos et ee
+mergeEq Not (Eq it _) (Eq ie _)
+  | it == ie = Nothing
+mergeEq Pos (Eq it et) e = Eq it <$> mergeEq Pos et e
+mergeEq Not (Eq _ et) e = mergeEq Not et e
+mergeEq _ _ _ = error "mergeEq: unreachable"
+mergeEq' :: Sense -> RNBDD -> BDD -> Maybe BDD
+mergeEq' pn t (BDD pn' e) = BDD s <$> mergeEq s t e
+  where s = if pn == pn' then Pos else Not
 
 -- Fundamental select smart constructor that just deals with BDD / RNBDD conversion.
 select0 :: Base -> BDD -> BDD -> BDD
@@ -107,9 +135,21 @@ type TR = DAG
 
 -- By convention Top/Bot have a root of (-1) which is otherwise invalid.
 root :: BDD -> Base
-root (BDD _ (Sel i _ _)) = i
-root (BDD _ (Eq i _)) = i
-root _ = -1
+root (BDD _ rn) = rootRN rn
+
+rootRN :: RNBDD -> Base
+rootRN (Sel i _ _) = i
+rootRN (Eq i _) = i
+rootRN _ = -1
+
+-- The height is (-1) for Top/Bot, and twice the root for other nodes, plus one for Sel.
+height :: BDD -> (Base, ConsId)
+height (BDD _ rn) = heightRN rn
+
+heightRN :: RNBDD -> (Base, ConsId)
+heightRN a@(Sel i _ _) = (i + i + 1, getId a)
+heightRN a@(Eq i _) = (i + i, getId a)
+heightRN _ = (-1,0)
 
 -- Given base type relation TR, does bdd type t *fully* contain base type b?
 bddBases :: TR -> BDD -> (Base -> Bool)
@@ -168,24 +208,21 @@ basicIntersect a0 b0 = loop a0 b0 where
   loop _ Bot = Bot
   loop a Top = a
   loop r@(BDD sa a) (BDD sb b) | a == b = if sa == sb then r else Bot
-  loop a b = loop' (commuteBDD (a,b))
+  loop a b
+    | height a >= height b = loop' (a,b)
+    | otherwise = loop' (b,a)
   loop' = memoize intersectMemoTable loop''
-  loop'' (a@(bdd -> Select va ta ea), b@(bdd -> Select vb tb eb)) =
-    case compare va vb of
-      GT -> select va (ta `loop` b)  (ea `loop` b)
-      EQ -> select va (ta `loop` tb) (ea `loop` eb)
-      LT -> select vb (a  `loop` tb) (a  `loop` eb)
-  loop'' (a@(bdd -> Exact va ma ea), b@(bdd -> Exact vb mb eb)) =
-    case compare va vb of
-      GT -> exact' va ma (loop ea b) b
-      EQ -> exact va (ma && mb) (loop ea eb)
-      LT -> exact' vb mb (loop eb a) a
-  loop'' (a@(bdd -> Select va ta ea), b@(bdd -> Exact vb mb eb)) =
-    case compare va vb of
-      GT -> select va (loop ta b) (loop ea b)
-      EQ -> select va (loop ta b) (loop ea eb)
-      LT -> exact' vb mb (loop a eb) a
-  loop'' (a{- Exact _ _ _ -}, b{- Select _ _ _ -}) = loop'' (b, a)
+  loop'' (bdd -> Select va ta ea, bdd -> Select vb tb eb)
+    | va == vb = select va (ta `loop` tb) (ea `loop` eb)
+  loop'' (bdd -> Select va ta ea, b@(bdd -> Exact vb _ eb))
+    | va == vb = select va (loop ta b) (loop ea eb)
+  loop'' (bdd -> Select va ta ea, b) =
+    select va (loop ta b)  (loop ea b)
+  loop'' (bdd -> Exact va ma ea, bdd -> Exact vb mb eb)
+    | va == vb = exact va (ma && mb) (loop ea eb)
+  loop'' (bdd -> Exact va ma ea, b) =
+    exact' va ma (loop ea b) b
+  loop'' _ = error "basicIntersect: unreachable"
   exact' v True e b
     | rightmost b = exact v True e
     | otherwise = e
@@ -302,32 +339,32 @@ coeMemoTable = unsafePerformIO mkMemo
 --  common r c (eraseDisjoints r c t) (eraseSubtypes r c e))
 commonOrErase :: TR -> Base -> BDD -> BDD -> (BDD, BDD, Maybe BDD)
 commonOrErase r c t0 e0 = loop t0 e0 where
-  loop Top Bot = (Top, Bot, Nothing)
-  loop Bot Top = (Bot, Top, Nothing)
-  loop Top Top = (Top, Top, Just Top)
-  loop Bot Bot = (Bot, Bot, Just Bot)
+  loop Top Bot | trace "TB" True = (Top, Bot, Nothing)
+  loop Bot Top | trace "BT" True = (Bot, Top, Nothing)
+  loop Top Top | trace "TT" True = (Top, Top, Just Top)
+  loop Bot Bot | trace "BB" True = (Bot, Bot, Just Bot)
   loop t e = loop' (t,e,(c,r))
   loop' = memoize coeMemoTable loop''
   loop'' (t@(bdd -> Select it tt et), e@(bdd -> Select ie te ee), _) =
     case (compare it ie, tr r it c) of
-      (GT, cmp) -> thenHigh cmp it tt et e
-      (EQ, cmp) -> same cmp it tt et te ee
-      (LT, _) -> elseHigh (tr r ie c) t ie te ee
+      (GT, cmp) -> trace "SSG" $ thenHigh cmp it tt et e
+      (EQ, cmp) -> trace "SSE" $ same cmp it tt et te ee
+      (LT, _) -> trace "SSE" elseHigh (tr r ie c) t ie te ee
   loop'' (bdd -> Select it tt et, e@(bdd -> Exact ie _ _), _)
-    | it >= ie = thenHigh (tr r it c) it tt et e
+    | it >= ie = trace "SE" $ thenHigh (tr r it c) it tt et e
   loop'' (t@(bdd -> Exact it _ _), bdd -> Select ie te ee, _)
-    | ie >= it = elseHigh (tr r ie c) t ie te ee
+    | ie >= it = trace "ES" $ elseHigh (tr r ie c) t ie te ee
   loop'' (t@(bdd -> Exact it mt et), e@(bdd -> Exact ie me ee), _) =
     case compare it ie of
-      GT -> thenExact it mt et e
-      EQ | tr r it c == Subtype -> (exact it mt et', ee', exact it mt <$> e')
-         | otherwise -> (et', exact ie me ee', exact ie me <$> e')
+      GT -> trace "EEG" $ thenExact it mt et e
+      EQ | tr r it c == Subtype -> trace "EEES" (exact it mt et', ee', exact it mt <$> e')
+         | otherwise -> trace "EEE" (et', exact ie me ee', exact ie me <$> e')
          where (et', ee', e') = loop et ee
-      LT -> elseExact t ie me ee
-  loop'' (bdd -> Exact it mt et, e, _) = thenExact it mt et e
-  loop'' (t, bdd -> Exact ie me ee, _) = elseExact t ie me ee
-  loop'' (bdd -> Select it tt et, e, _) = thenHigh (tr r it c) it tt et e
-  loop'' (t, bdd -> Select ie te ee, _) = elseHigh (tr r ie c) t ie te ee
+      LT -> trace "EEL" $ elseExact t ie me ee
+  loop'' (bdd -> Exact it mt et, e, _) = trace "E_" $ thenExact it mt et e
+  loop'' (t, bdd -> Exact ie me ee, _) = trace "_E" $ elseExact t ie me ee
+  loop'' (bdd -> Select it tt et, e, _) = trace "S_" $ thenHigh (tr r it c) it tt et e
+  loop'' (t, bdd -> Select ie te ee, _) = trace "_S" $ elseHigh (tr r ie c) t ie te ee
   loop'' _ = error "commonOrErase: unreachable"
   both i tt et te ee = (select i tt' et', select i te' ee', selectM i t' e')
     where (tt', te', t') = loop tt te
@@ -399,17 +436,17 @@ data Relation =
   deriving (Eq, Show)
 
 instance Semigroup Relation where
-  Relation sub1 sup1 subc1 supc1 <> Relation sub2 sup2 subc2 supc2 =
+  ~(Relation sub1 sup1 subc1 supc1) <> ~(Relation sub2 sup2 subc2 supc2) =
     Relation (sub1 && sub2) (sup1 && sup2) (subc1 && subc2) (supc1 && supc2)
 
 commute :: Relation -> Relation
-commute (Relation sub sup subc supc) = Relation sup sub subc supc
+commute ~(Relation sub sup subc supc) = Relation sup sub subc supc
 
 rightComplement :: Relation -> Relation
-rightComplement (Relation sub sup subc supc) = Relation subc supc sub sup
+rightComplement ~(Relation sub sup subc supc) = Relation subc supc sub sup
 
 leftComplement :: Relation -> Relation
-leftComplement (Relation sub sup subc supc) = Relation supc subc sup sub
+leftComplement ~(Relation sub sup subc supc) = Relation supc subc sup sub
 
 isDisjoint :: Relation -> Bool
 isDisjoint (Relation False False subc _) = subc
@@ -420,6 +457,7 @@ isBottom :: TR -> BDD -> Bool
 isBottom r b0 = loop b0 where
   loop (BDD Pos (Sel i t e)) =
     loop (eraseDisjoints r i t) && loop (eraseSubtypes r i (BDD Pos e))
+  loop (BDD _ (Eq _ _)) = False
   loop (BDD Not _) = False
   loop _ {- Bot -} = True
 
@@ -443,5 +481,27 @@ relateNaive r a0 b0 = Relation
 -- a is disjoint from b if their intersection is empty (Bot).
 -- a is a subtype of b if their intersection is a, and vice versa.
 relate :: TR -> BDD -> BDD -> Relation
-relate r a0 b0 = loop a0 b0 where
-  loop a b = const undefined (a,b,r)
+relate r a0 b0 = loop (canonS r a0) (canonS r b0) where
+  loop a (BDD Pos b) = loop1 a b
+  loop a (BDD Not b) = rightComplement $ loop1 a b
+  loop1 (BDD Pos a) b = loopRN a b
+  loop1 (BDD Not a) b = leftComplement $ loopRN a b
+  loopRN None None = Relation True True True False
+  loopRN None _    = Relation True False True False
+  loopRN _    None = Relation False True True False
+  loopRN a b
+    | a == b = Relation True True False False
+    | heightRN a >= heightRN b = loopRN' (a, b, r)
+    | otherwise = commute $ loopRN' (b, a, r)
+  loopRN' = loopRN''
+  loopRN'' (Sel ia ta ea, Sel ib tb eb, _)
+    | ia == ib = loop ta tb <> loopRN ea eb
+  loopRN'' (Sel ia ta ea, b, _) =
+    loop ta (canonS r (eraseDisjoints r ia (BDD Pos b))) <>
+    commute (loop1 (canonS r (eraseSubtypes r ia (BDD Pos b))) ea)
+  loopRN'' (Eq ia ea, Eq ib eb, _)
+    | ia == ib =
+      Relation True True False True <> loopRN ea eb
+  loopRN'' (Eq _ ea, b, _) =
+    Relation False True True True <> loopRN ea b
+  loopRN'' _ = error "Unreachable in loopRN''"
