@@ -1,7 +1,7 @@
 {-# LANGUAGE PatternSynonyms, TypeFamilies #-}
 module BDDSubtyping.BDDInternal(
   BDD(..), RNBDD, Sense(..), Base,
-  pattern None, pattern Sel, pattern Eq,
+  pattern None, pattern Sel,
   pattern Bot, pattern Top,
   FV(fv, rename, showIt),
   commuteBDD -- but not MemoKey.
@@ -36,7 +36,6 @@ instance Hashable BDD where
 -- that enforce hash-consing.
 data RNBDD
   = NoneC
-  | EqC !ConsId !Base !RNBDD
   | SelC !ConsId !Base {-# UNPACK #-}!BDD !RNBDD
 
 commuteBDD :: (BDD, BDD) -> (BDD, BDD)
@@ -52,22 +51,16 @@ instance Hashable RNBDD where
 
 instance HashConsable RNBDD where
   getId NoneC = 0
-  getId (EqC i _ _) = i
   getId (SelC i _ _ _) = i
 
-  setId i (EqC _ b e) = EqC i b e
   setId i (SelC _ b t e) = SelC i b t e
   setId _ _{-NoneC-} = NoneC
 
-  EqC _ ba ea `contentEq` EqC _ bb eb =
-    ba == bb && ea == eb
   SelC _ ba ta ea `contentEq` SelC _ bb tb eb =
     ba == bb && ta == tb && ea == eb
   NoneC `contentEq` NoneC = True
   _ `contentEq` _ = False
 
-  contentHashWithSalt s (EqC _ b r) =
-    (s `hashWithSalt` b) `hashWithSalt` r
   contentHashWithSalt s (SelC _ b t e) =
     ((s `hashWithSalt` b) `hashWithSalt` e) `hashWithSalt` t
   contentHashWithSalt s _{-None-} = s + 1
@@ -87,8 +80,6 @@ instance Show BDD where
 
 instance Show RNBDD where
   showsPrec _ (Sel i Top None) = showParen True (("base "++) . shows i)
-  showsPrec _ (Eq i None) = showParen True (("exactly "++) . shows i)
-  showsPrec _ (Eq i e) = showParen True (("exact "++) . shows i . (" True "++) . shows e)
   showsPrec _ (Sel i t e) =
     showParen True
       (("select "++) . shows i . (' ':) . shows t . (' ':) . shows e)
@@ -104,10 +95,6 @@ pattern None <- NoneC where
 pattern Sel :: Base -> BDD -> RNBDD -> RNBDD
 pattern Sel i t e <- (SelC _ i t e) where
   Sel i t e = rnbdd (SelC 0 i t e)
-
-pattern Eq :: Base -> RNBDD -> RNBDD
-pattern Eq i e <- (EqC _ i e) where
-  Eq i e = rnbdd (EqC 0 i e)
 
 pattern Bot :: BDD
 pattern Bot <- BDD Pos None where
@@ -132,10 +119,8 @@ instance FV RNBDD where
     | S.getMax r == Just i = r
     | otherwise = S.insertLarger i r
     where r = fv t <> fv e
-  fv (Eq i e) = S.insertLarger i (fv e)
   fv _{-None-} = mempty
   rename r (Sel i t e) = Sel (r!i) (rename r t) (rename r e)
-  rename r (Eq i e) = Eq (r!i) $ rename r e
   rename _ _{-None-} = None
 
 instance MemoKey RNBDD where

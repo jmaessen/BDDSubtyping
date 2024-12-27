@@ -24,11 +24,11 @@ instance MemoKey Int where
 
 instance (MemoKey a, MemoKey b) => MemoKey (a,b) where
   type MK (a,b) = (MK a, MK b)
-  toMemoKey (a,b) = (toMemoKey a, toMemoKey b)
+  toMemoKey (a,b) = ((,) $! toMemoKey a) $! toMemoKey b
 
 instance (MemoKey a, MemoKey b, MemoKey c) => MemoKey (a,b,c) where
   type MK (a,b,c) = (MK a, MK b, MK c)
-  toMemoKey (a,b,c) = (toMemoKey a, toMemoKey b, toMemoKey c)
+  toMemoKey (a,b,c) = (((,,) $! toMemoKey a) $! toMemoKey b) $! toMemoKey c
 
 newtype MemoTable a b = MT (MVar (HM.HashMap (MK a) b))
 
@@ -40,7 +40,7 @@ memoize ::
   MemoTable a b -> (a -> b) -> (a -> b)
 memoize (MT table) f = go where
   go a = do
-    let k = toMemoKey a
+    let !k = toMemoKey a
     unsafeDupablePerformIO $
       modifyMVar table $ \t ->
         pure $
@@ -56,7 +56,7 @@ memoizeIdem1 ::
   MemoTable (a,b) a -> ((a,b) -> a) -> ((a,b) -> a)
 memoizeIdem1 (MT table) f = go where
   go ab@(~(_, b)) = do
-    let k = toMemoKey ab
+    let !k = toMemoKey ab
     unsafeDupablePerformIO $ do
       r <-
         modifyMVar table $ \t ->
@@ -67,7 +67,7 @@ memoizeIdem1 (MT table) f = go where
               where r = f ab
       -- To avoid deadlock when forcing r (which is still a thunk),
       -- we must drop the MVar and re-take it.
-      let k' = toMemoKey (r, b)
+      let !k' = toMemoKey (r, b)
       if k /= k' then
         modifyMVar table $ \t -> pure (HM.insert k' r t, r)
       else pure r

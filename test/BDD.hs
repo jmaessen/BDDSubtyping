@@ -19,28 +19,18 @@ nn :: NonNegative i -> i
 nn (NonNegative i) = i
 
 instance Arbitrary BDD where
-  arbitrary = sized mkBdd0 where
-    mkBdd0 sz = mkBdd (sz + 1) sz
-    mkBdd :: Base -> Int -> Gen BDD
-    mkBdd _ n | n <= 0 = oneof [return Bot, return Top]
-    mkBdd i' n = do
+  arbitrary = sized mkBdd where
+    mkBdd :: Int -> Gen BDD
+    mkBdd n | n <= 0 = oneof [return Bot, return Top]
+    mkBdd n = do
       let i = n - 1
-      frequency
-        [(if i == i' then 0 else 2, do
-            t <- chooseInt (-2, n) >>= mkBdd i
-            e <- chooseInt (-2, n) >>= mkBdd i  -- Can generate bogus exact rhses!
-            return (select i t e)),
-         (1, mkBdd i (i-1)),
-         (1, do
-            m <- arbitrary
-            e <- chooseInt (-2, n-1) >>= mkBdd i
-            return (exact i m e))]
+      t <- chooseInt (0, i) >>= mkBdd
+      e <- chooseInt (0, i) >>= mkBdd
+      return (select i t e)
   shrink b | rightmost b =
     complement b : (complement <$> shrink (complement b))
   shrink (bdd -> Select i t e) =
     e:t:(select i t <$> shrink e)++(select i <$> shrink t <*> pure e)
-  shrink (bdd -> Exact i m e) =
-    e:(exact i m <$> shrink e)
   shrink _ = []
 
 -- Test fixture type.
@@ -114,14 +104,14 @@ instance Dot BDD where
             "  N"++sn++":sw -> "++tid++";",
             "  N"++sn++":se -> "++eid++" [style=dashed];"]
            ++ tl ++ el
-      node n (Exact i m e) =
-        let (eid, el) = ref n e
-            mm | m = "="
-               | otherwise = "!"
-            sn = show n
-        in ["  N"++sn++" [label=\""++mm++show i++"\", shape=box];",
-            "  N"++sn++":s -> "++eid++" [style=dashed];"]
-           ++ el
+      -- node n (Exact i m e) =
+      --   let (eid, el) = ref n e
+      --       mm | m = "="
+      --          | otherwise = "!"
+      --       sn = show n
+      --   in ["  N"++sn++" [label=\""++mm++show i++"\", shape=box];",
+      --       "  N"++sn++":s -> "++eid++" [style=dashed];"]
+      --      ++ el
       node _ _ = []
       ref i e = ref' i e (g!e)
       ref' i _ TopP =
@@ -137,9 +127,6 @@ prop_hc_base (TF () a) = a === mkEq a where
   mkEq (bdd -> Select i Top Bot) = base i
   mkEq b@(bdd -> Select _ _ Top) = complement (mkEq (complement b))
   mkEq (bdd -> Select i t e) = select i t e
-  mkEq (bdd -> Exact i True Bot) = exactly i
-  mkEq (bdd -> Exact i False Top) = complement (exactly i)
-  mkEq (bdd -> Exact i m e) = exact i m e
   mkEq Top = Top
   mkEq _{-Bot-} = Bot
 
@@ -162,14 +149,6 @@ prop_base (TF r (nn -> i)) =
 prop_fv_base :: NBase -> Property
 prop_fv_base (nn -> i) =
   fv (base i) === DS.singleton i
-
-prop_exactly :: TF TR NBase -> Property
-prop_exactly (TF r (nn -> i)) =
-  model r (exactly i) === [i]
-
-prop_fv_exactly :: NBase -> Property
-prop_fv_exactly (nn -> i) =
-  fv (exactly i) === DS.singleton i
 
 prop_bases_bot :: TF TR NBase -> Property
 prop_bases_bot (TF r (nn -> i)) =
@@ -361,17 +340,6 @@ prop_common_complement (TF r (bdd -> Select c t e)) =
     Nothing -> property Discard
 prop_common_complement _ = property Discard
 
-prop_commonOrErase_refl_counter :: Property
-prop_commonOrErase_refl_counter = prop_commonOrErase_refl (TF r (a,b)) where
-  r = mkDag [(2,[1])]
-  a = Positive {getPositive = 1}
-  b = select 1 (exact 1 True Bot) (exact 0 True Bot)
-
-prop_commonOrErase_counter :: Property
-prop_commonOrErase_counter = prop_commonOrErase (TF r a) where
-  r = mkDag [(3,[0,1])]
-  a = select 3 (exact 0 True Bot) (select 2 (exact 2 True Bot) (base 1))
-
 prop_commonOrErase_refl :: TF TR (BaseInc, BDD) -> Property
 prop_commonOrErase_refl (TF r (p -> i, b)) =
   let c = root b + i
@@ -438,6 +406,87 @@ prop_relateNaiveTop (TF r b) =
       top = isBottom r (complement b)
   in rel === Relation top True bot True
 
+prop_relateNaive_comm :: TF TR (BDD, BDD) -> Property
+prop_relateNaive_comm (TF r (a,b)) =
+  relateNaive r a b === commute (relateNaive r b a)
+
+prop_relateNaive_rcomp :: TF TR (BDD, BDD) -> Property
+prop_relateNaive_rcomp (TF r (a,b)) =
+  relateNaive r a (complement b) === rightComplement (relateNaive r a b)
+
+prop_relateNaive_lcomp :: TF TR (BDD, BDD) -> Property
+prop_relateNaive_lcomp (TF r (a,b)) =
+  relateNaive r (complement a) b === leftComplement (relateNaive r a b)
+
+prop_relateNaive_lcomp_counter :: Property
+prop_relateNaive_lcomp_counter = prop_relateNaive_lcomp (TF r (a,b)) where
+  r = mkDag [(1,[0]),(2,[0]),(3,[2]),(4,[1])]
+  a = (select 4 Top (base 3))
+  b = (select 3 (base 2) (base 1))
+
+-- Test join
+prop_relateNaive_semigroup :: TF TR ((BaseInc, BDD, BDD), BDD) -> Property
+prop_relateNaive_semigroup (TF r ((p -> i, a, b), c)) =
+  let v = (root a `max` root b `max` root c) + i
+      at = eraseDisjoints r v a
+      ct = eraseDisjoints r v c
+      be = eraseSubtypes r v b
+      ce = eraseSubtypes r v c
+  in relateNaive r (select v a b) c ===
+       (relateNaive r at ct <> relateNaive r be ce)
+
+prop_relateNaive_relate :: TF TR (BDD, BDD) -> Property
+prop_relateNaive_relate (TF r (a,b)) =
+  relateNaive r a b === relate r a b
+
+prop_canon_common_refl :: TF TR (BaseInc, BDD) -> Property
+prop_canon_common_refl (TF r (p -> i, b)) =
+    common r (root b' + i) b' b' === Just b'
+  where b' = canonS r b
+
+prop_eraseDisjointsC :: TF TR (BaseInc, BDD) -> Property
+prop_eraseDisjointsC (TF r (p -> i, b)) =
+  let v = root b + i
+      bc = canonS r b
+  in eraseDisjointsC r v bc === canonS r (eraseDisjoints r v b)
+
+prop_eraseSubtypesC :: TF TR (BaseInc, BDD) -> Property
+prop_eraseSubtypesC (TF r (p -> i, b)) =
+  let v = root b + i
+      bc = canonS r b
+  in eraseSubtypesC r v bc === canonS r (eraseSubtypes r v b)
+
+prop_commonC :: TF TR BDD -> Property
+prop_commonC (TF r (bdd -> Select i t e)) =
+  let tc = canonS r (eraseDisjoints r i t)
+      ec = canonS r (eraseSubtypes r i e)
+  in case (commonC r i tc ec, canonS r <$> common r i tc ec) of
+    (Nothing, Nothing) -> property Discard
+    (Just Bot, Just Bot) -> property Discard
+    (Just Top, Just Top) -> property Discard
+    (a, b) -> counterexample (show (tc,ec)) (a === b)
+prop_commonC _ = property Discard
+
+prop_commonC_canon :: TF TR BDD -> Property
+prop_commonC_canon (TF r (bdd -> Select i t e)) =
+  let tc = canonS r (eraseDisjoints r i t)
+      ec = canonS r (eraseSubtypes r i e)
+  in case commonC r i tc ec of
+    Nothing -> property Discard
+    Just Bot -> property Discard
+    Just Top -> property Discard
+    Just res -> res === canonS r res
+prop_commonC_canon _ = property Discard
+
+prop_intersect_canon :: TF TR (BDD, BDD) -> Property
+prop_intersect_canon (TF r (a,b)) =
+    counterexample (show (a', b'))
+      (intersect r a' b' === canonS r (basicIntersect a b))
+  where a' = canonS r a
+        b' = canonS r b
+
+-- Last because high rejection rates.
+
 prop_relateNaive_sub :: TF TR (BDD, BDD) -> Property
 prop_relateNaive_sub (TF r (a,b))
   | isSubtype rel && isSupertype rel =
@@ -470,41 +519,13 @@ prop_relateNaive_disj (TF r (a,b))
   | otherwise = property Discard
   where rel = relateNaive r a b
 
-prop_relateNaive_comm :: TF TR (BDD, BDD) -> Property
-prop_relateNaive_comm (TF r (a,b)) =
-  relateNaive r a b === commute (relateNaive r b a)
-
-prop_relateNaive_rcomp :: TF TR (BDD, BDD) -> Property
-prop_relateNaive_rcomp (TF r (a,b)) =
-  relateNaive r a (complement b) === rightComplement (relateNaive r a b)
-
-prop_relateNaive_lcomp :: TF TR (BDD, BDD) -> Property
-prop_relateNaive_lcomp (TF r (a,b)) =
-  relateNaive r (complement a) b === leftComplement (relateNaive r a b)
-
--- Test join
-prop_relateNaive_semigroup :: TF TR ((BaseInc, BDD, BDD), BDD) -> Property
-prop_relateNaive_semigroup (TF r ((p -> i, a, b), c)) =
-  let v = (root a `max` root b `max` root c) + i
-      at = eraseDisjoints r v a
-      ct = eraseDisjoints r v c
-      be = eraseSubtypes r v b
-      ce = eraseSubtypes r v c
-  in relateNaive r (select v a b) c ===
-       (relateNaive r at ct <> relateNaive r be ce)
-
-prop_relateNaive_relate :: TF TR (BDD, BDD) -> Property
-prop_relateNaive_relate (TF r (a,b)) =
-  relateNaive r a b === relate r a b
-
--- Last because high rejection rates.
 prop_common_correct1 :: TF TR BDD -> Property
 prop_common_correct1 (TF r b@(bdd -> Select c t e)) =
   let t' = eraseDisjoints r c t
       e' = eraseSubtypes r c e
   in case common r c t' e' of
-        Just s -> modelDiff r b s === []
-        Nothing -> property Discard
+    Just s -> modelDiff r b s === []
+    Nothing -> property Discard
 prop_common_correct1 _ = property Discard
 
 -- This just takes ages.
@@ -518,9 +539,9 @@ qc :: (Testable t) => t -> IO ()
 qc = qcs 12
 
 qcs :: (Testable t) => Int -> t -> IO ()
-qcs s = quickCheckWith (stdArgs{ maxSuccess = 10000, maxSize = s, maxDiscardRatio = 3 })
+qcs s = quickCheckWith (stdArgs{ maxSuccess = 10000, maxSize = s, maxDiscardRatio = 10 })
 
 return []
 
 bddTestAll :: IO Bool
-bddTestAll = $forAllProperties (quickCheckWithResult (stdArgs{maxSuccess=10000, maxDiscardRatio=1000}))
+bddTestAll = $forAllProperties (quickCheckWithResult (stdArgs{maxSuccess=10000, maxDiscardRatio=10}))
